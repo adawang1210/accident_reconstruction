@@ -6,9 +6,12 @@
             "runtimeExecutable": ".venv/bin/python",
             "runtimeArgs": [
                 "-m",
-                "examples.tracking.web_app"
+                "accident_reconstruction.web_app",
+                "--port",
+                "8011"
             ],
-            "port": 8000
+            "port": 8011,
+            "autoPort": false
         }
     ]
 }

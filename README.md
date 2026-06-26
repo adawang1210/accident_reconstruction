@@ -24,6 +24,52 @@
 
 ---
 
+## 實際成果
+
+四個場景的重建輸出如下。圖為**抽象軌跡圖（不含任何事故畫面）**：彩色線為各車的辨識軌跡、
+🔴 為撞擊點，標註含速度與經緯度。每幀經緯度／速度另有 CSV、軌跡另有可疊 Google My Maps 的
+KML（皆在 `data/`，不入庫）。各場景的來源、校正方法與殘差見 [`docs/DATA.md`](docs/DATA.md)。
+
+> 來源為公開 YouTube 車禍影片，**僅列連結、影片不入庫**（檔大且有版權）。
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/result_keelung_2d_map.png" alt="基隆 2D 軌跡圖" /><br/>
+      <b>基隆 信五路 × 義二路</b>（警車 × 計程車）· 道路對齊 2D 圖<br/>
+      殘差 mean <b>0.69 m</b> · <a href="https://m.youtube.com/watch?v=REwQUfTaDMc&ra=m">來源影片</a>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/result_yilan_recognized.png" alt="宜蘭五結 辨識軌跡" /><br/>
+      <b>宜蘭五結 無號誌路口</b>（小貨車 × 機車 × 行人）· 辨識軌跡＋比例尺<br/>
+      殘差 mean <b>0.69 m</b> · <a href="https://m.youtube.com/watch?v=7xQGDASAMEg">來源影片</a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/result_taoyuan_recognized.png" alt="桃園楊梅 辨識軌跡" /><br/>
+      <b>桃園楊梅 高鐵南路七段</b>（違規左轉）· 辨識軌跡＋比例尺<br/>
+      殘差 mean <b>0.43 m</b>（最準）· <a href="https://m.youtube.com/watch?v=naWS5Jhd6Yk">來源影片</a>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/result_pre_impact_2d_map.png" alt="台南永康 2D 軌跡圖" /><br/>
+      <b>台南永康 自強路 × 高速一街二段</b>（汽車 × 機車）· 道路對齊 2D 圖<br/>
+      殘差 mean <b>3.20 m</b>（魚眼廣角）· <a href="https://m.youtube.com/watch?v=x_u9wGClKLQ">來源影片</a>
+    </td>
+  </tr>
+</table>
+
+## 介面：Web 工作台
+
+把整條 pipeline 收進一個五步驟工作台（`accident_reconstruction.web_app`）：
+**① 影片／下載 → ② 校正（GCP）→ ③ 標記車輛 → ④ 執行 → ⑤ 結果**。
+下圖為步驟②校正畫面——左側點影片像素、右側在 OpenStreetMap 點對應經緯度，配對 ≥8 點即可
+存檔並算出單應矩陣（示意圖，不含事故畫面）：
+
+![Web 工作台：GCP 校正介面](docs/assets/ui_workbench.svg)
+
+---
+
 ## 快速開始
 
 ```bash

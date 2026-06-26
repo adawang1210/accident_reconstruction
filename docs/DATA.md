@@ -44,7 +44,7 @@ GCP 的 `pixel`／`lat`／`lon`。
 
 | 項目       | 內容                                                                                      |
 | ---------- | ----------------------------------------------------------------------------------------- |
-| 來源網址   | `<待填>`                                                                                  |
+| 來源網址   | `https://m.youtube.com/watch?v=x_u9wGClKLQ&source_ve_path=OTY3MTQ&embeds_referring_euri=https%3A%2F%2Fwww.wowtchout.com%2F`                                                                                  |
 | 標記點     | [`scene_records/pre_impact_motorcycle.json`](../scene_records/pre_impact_motorcycle.json) |
 | 下載存成   | `data/videos/pre_impact_motorcycle_source.mp4`                                            |
 | 場景參數   | frames 80–180、fps 25、內建場景（`scene_config.PRE_IMPACT_MOTORCYCLE`）                   |
@@ -83,7 +83,7 @@ GCP 的 `pixel`／`lat`／`lon`。
 
 | 項目       | 內容                                                                              |
 | ---------- | --------------------------------------------------------------------------------- |
-| 來源網址   | `<待填>`                                                                          |
+| 來源網址   | `https://m.youtube.com/watch?v=naWS5Jhd6Yk&source_ve_path=OTY3MTQ&embeds_referring_euri=https%3A%2F%2Fwww.wowtchout.com%2F`                                                                          |
 | 標記點     | [`scene_records/taoyuan_yangmei.json`](../scene_records/taoyuan_yangmei.json)     |
 | 下載存成   | `data/videos/【車禍影片】違規左轉的下場（2026.03.01 桃園市楊梅區高鐵南路七段.mp4` |
 | 場景參數   | frames 0–199、fps 25、動態場景（`data/scenes/taoyuan_yangmei/scene.json`）        |
@@ -131,4 +131,4 @@ rec = find_record_by_url("https://youtu.be/REwQUfTaDMc")
 ```
 
 > 要讓某場景被自動命中，務必把它的網址填進 `scene_records/<name>.json` 的 `youtube_url`
-> （目前 `pre_impact_motorcycle` 與 `taoyuan_yangmei` 仍為 `null`，待補）。
+> （四個場景現都已填好、皆可自動命中）。
