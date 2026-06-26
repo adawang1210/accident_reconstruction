@@ -35,8 +35,8 @@ KML（皆在 `data/`，不入庫）。各場景的來源、校正方法與殘差
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="docs/assets/result_keelung_2d_map.png" alt="基隆 2D 軌跡圖" /><br/>
-      <b>基隆 信五路 × 義二路</b>（警車 × 計程車）· 道路對齊 2D 圖<br/>
+      <img src="docs/assets/result_keelung_recognized.png" alt="基隆 辨識軌跡" /><br/>
+      <b>基隆 信五路 × 義二路</b>（警車 × 計程車）· 辨識軌跡＋比例尺<br/>
       殘差 mean <b>0.69 m</b> · <a href="https://m.youtube.com/watch?v=REwQUfTaDMc&ra=m">來源影片</a>
     </td>
     <td width="50%" valign="top">
@@ -52,8 +52,8 @@ KML（皆在 `data/`，不入庫）。各場景的來源、校正方法與殘差
       殘差 mean <b>0.43 m</b>（最準）· <a href="https://m.youtube.com/watch?v=naWS5Jhd6Yk">來源影片</a>
     </td>
     <td width="50%" valign="top">
-      <img src="docs/assets/result_pre_impact_2d_map.png" alt="台南永康 2D 軌跡圖" /><br/>
-      <b>台南永康 自強路 × 高速一街二段</b>（汽車 × 機車）· 道路對齊 2D 圖<br/>
+      <img src="docs/assets/result_pre_impact_recognized.png" alt="台南永康 辨識軌跡" /><br/>
+      <b>台南永康 自強路 × 高速一街二段</b>（汽車 × 機車）· 辨識軌跡＋比例尺<br/>
       殘差 mean <b>3.20 m</b>（魚眼廣角）· <a href="https://m.youtube.com/watch?v=x_u9wGClKLQ">來源影片</a>
     </td>
   </tr>
