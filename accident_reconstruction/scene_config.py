@@ -43,6 +43,9 @@ class SceneConfig:
         end_frame: Last frame (inclusive).
         fps: Source frames per second.
         weights: SAM2 weights file for the tracker.
+        youtube_url: Source YouTube URL of the clip, if downloaded. Used to look up
+            a committed calibration record (``scene_records/``) so a re-downloaded
+            clip is auto-calibrated. See :mod:`accident_reconstruction.scene_records`.
         init_vehicles: ``{label: {"box": [x1,y1,x2,y2], "bgr": (b,g,r), "frame"?}}``
             default vehicle prompts (overridden by ``select_vehicles.py`` output).
         vehicle_display: ``{label: {"name": str, "rgb": (r,g,b)}}`` figure styling.
@@ -72,6 +75,7 @@ class SceneConfig:
     fps: float = 25.0
     weights: str = "sam2.1_t.pt"
     road_width_m: float = 5.6
+    youtube_url: str | None = None
     stop_vehicle: str | None = None
     moving_vehicle: str | None = None
     init_vehicles: dict = field(default_factory=dict)
@@ -256,6 +260,7 @@ class SceneConfig:
             "end_frame": self.end_frame,
             "fps": self.fps,
             "weights": self.weights,
+            "youtube_url": self.youtube_url,
             "stop_vehicle": self.stop_vehicle,
             "moving_vehicle": self.moving_vehicle,
             "init_vehicles": self.init_vehicles,
@@ -283,6 +288,7 @@ class SceneConfig:
             end_frame=int(data.get("end_frame", 0)),
             fps=float(data.get("fps", 25.0)),
             weights=data.get("weights", "sam2.1_t.pt"),
+            youtube_url=data.get("youtube_url"),
             stop_vehicle=data.get("stop_vehicle"),
             moving_vehicle=data.get("moving_vehicle"),
             init_vehicles=data.get("init_vehicles") or {},

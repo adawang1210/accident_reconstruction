@@ -37,9 +37,13 @@ from accident_reconstruction.calibrate_homography import (
     save_gcps,
 )
 from accident_reconstruction.scene_config import SCENE, SCENES, VIDEO_DIR, SceneConfig
+from accident_reconstruction.scene_records import (
+    find_record_by_url,
+    save_record,
+)
 
 
-def _register_dynamic_scene(relpath: str):
+def _register_dynamic_scene(relpath: str, youtube_url: str | None = None):
     """Build + persist a scene for a clip that has no built-in SceneConfig.
 
     Lets a freshly downloaded/selected clip be calibrated and run: a minimal scene
@@ -50,6 +54,8 @@ def _register_dynamic_scene(relpath: str):
 
     Args:
         relpath: Clip path under ``data/``.
+        youtube_url: Source URL, stored on the scene so its calibration can be
+            recorded/looked up by URL (see :mod:`scene_records`).
 
     Returns:
         The new :class:`SceneConfig`, or None if the video is missing.
@@ -80,6 +86,7 @@ def _register_dynamic_scene(relpath: str):
         start_frame=0,
         end_frame=max(0, frames - 1),
         fps=float(fps),
+        youtube_url=youtube_url,
     )
     SCENES[scene.name] = scene
     scene.artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -237,11 +244,28 @@ def media(relpath: str):
 
 @app.post("/api/download")
 def download(request: DownloadRequest) -> dict:
-    """Download a YouTube clip; return the new file path or an error."""
+    """Download a YouTube clip; auto-calibrate it if its URL has a saved record."""
     try:
-        return {"ok": True, "file": str(download_youtube(request))}
+        relpath = str(download_youtube(request))
     except Exception as error:  # surface the reason to the UI
         return {"ok": False, "error": str(error)}
+    result: dict = {"ok": True, "file": relpath}
+    # If a committed calibration record matches this URL, replay the marked GCPs
+    # onto the new scene so the user skips re-calibrating.
+    record = find_record_by_url(request.url)
+    scene = _register_dynamic_scene(relpath, youtube_url=request.url)
+    if scene is not None and record and record.get("gcps"):
+        try:
+            calibration = _calibrate_scene(scene, record["gcps"], relpath)
+            if calibration is not None:
+                result["auto_calibrated"] = {
+                    "from": record.get("name"),
+                    "gcps": len(record["gcps"]),
+                    "mean_residual_m": round(calibration["mean_residual_m"], 2),
+                }
+        except Exception as error:  # auto-calibration is best-effort
+            result["auto_calibrate_error"] = str(error)
+    return result
 
 
 @app.get("/api/frame")
@@ -385,6 +409,42 @@ class CalibrateRequest(BaseModel):
     video: str | None = None
 
 
+def _video_image_size(video_relpath: str | None) -> tuple[int, int] | None:
+    """Return a clip's (width, height) in pixels, or None if unreadable."""
+    if not video_relpath:
+        return None
+    capture = cv2.VideoCapture(str((DATA_ROOT / video_relpath).resolve()))
+    if not capture.isOpened():
+        return None
+    size = (
+        int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
+        int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+    )
+    capture.release()
+    return size
+
+
+def _calibrate_scene(
+    scene: SceneConfig, gcps: list[dict], video_relpath: str | None = None
+) -> dict | None:
+    """Persist ``gcps`` and (re)build + write the homography for ``scene``.
+
+    Shared by the calibrate endpoint and the download auto-calibration path.
+
+    Returns:
+        The calibration dict, or None when there are fewer than 4 points.
+    """
+    save_gcps(scene.gcp_store, gcps)
+    if len(gcps) < 4:
+        return None
+    calibration = build_calibration(gcps, image_size=_video_image_size(video_relpath))
+    scene.calibration_path.parent.mkdir(parents=True, exist_ok=True)
+    scene.calibration_path.write_text(
+        json.dumps(calibration, indent=2, ensure_ascii=False)
+    )
+    return calibration
+
+
 @app.post("/api/calibrate")
 def calibrate(request: CalibrateRequest) -> dict:
     """Save the GCPs and rebuild the homography; return the per-point error."""
@@ -392,27 +452,20 @@ def calibrate(request: CalibrateRequest) -> dict:
         scene = _scene_for_video(request.video) if request.video else SCENE
         if scene is None:
             return {"ok": False, "error": "此影片沒有對應的場景設定（scene_config）"}
-        save_gcps(scene.gcp_store, request.gcps)
-        if len(request.gcps) < 4:
+        calibration = _calibrate_scene(scene, request.gcps, request.video)
+        if calibration is None:
             msg = f"需要 >= 4 點，目前 {len(request.gcps)}（已存）"
             return {"ok": False, "error": msg}
-        image_size = None
-        capture = (
-            cv2.VideoCapture(str((DATA_ROOT / request.video).resolve()))
-            if request.video
-            else None
-        )
-        if capture is not None and capture.isOpened():
-            image_size = (
-                int(capture.get(cv2.CAP_PROP_FRAME_WIDTH)),
-                int(capture.get(cv2.CAP_PROP_FRAME_HEIGHT)),
+        # Remember URL -> marked GCPs so this clip auto-calibrates next time.
+        if scene.youtube_url:
+            save_record(
+                scene.name,
+                scene.youtube_url,
+                request.gcps,
+                source_video=str(scene.source_video),
+                origin_latlon=calibration.get("origin_latlon"),
+                distortion=calibration.get("distortion"),
             )
-            capture.release()
-        calibration = build_calibration(request.gcps, image_size=image_size)
-        scene.calibration_path.parent.mkdir(parents=True, exist_ok=True)
-        scene.calibration_path.write_text(
-            json.dumps(calibration, indent=2, ensure_ascii=False)
-        )
         per_point = [
             {"name": n, "err": round(e, 2), "inlier": bool(i)}
             for n, e, i in zip(
