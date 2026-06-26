@@ -1,0 +1,1061 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>事故重建工作台</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --bg:#14161a; --bar:#0b0c0f; --ink:#e8e8e8; --muted:#9aa0a6; --line:#2a2d34;
+          --accent:#2d6cdf; --ok:#28d07a;
+          /* Motion identity (Corporate archetype): one signature curve, three
+             durations, one entrance. MD3 standard + emphasized easings. */
+          --ease:cubic-bezier(0.2,0,0,1); --ease-emph:cubic-bezier(0.05,0.7,0.1,1);
+          --ease-out:cubic-bezier(0.33,1,0.68,1);
+          --dur-quick:140ms; --dur:240ms; --dur-slow:400ms; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; font-family:-apple-system,"PingFang TC",sans-serif; color:var(--ink); background:var(--bg); }
+  header { background: var(--bar); border-bottom: 1px solid #000; }
+  .topbar { display:flex; gap:8px; align-items:center; padding:8px 12px; }
+  .topbar .title { font-weight:700; }
+  .stepper { display:flex; padding:0 8px 8px; }
+  .step { flex:1; display:flex; align-items:center; gap:8px; padding:8px 10px; cursor:pointer;
+          color:var(--muted); border-bottom:3px solid transparent; font-size:14px; }
+  .step .num { width:22px; height:22px; border-radius:50%; background:#2a2d34; color:#cfd2d6;
+               display:grid; place-items:center; font-size:12px; font-weight:700; }
+  .step.done .num { background:var(--ok); color:#07130b; }
+  .step.active { color:#fff; border-bottom-color:var(--accent); }
+  .step.active .num { background:var(--accent); color:#fff; }
+  .step .arrow { color:#3a3d44; margin-left:auto; }
+  #app { display:flex; height:calc(100vh - 96px); }
+  .pane { height:100%; display:flex; flex-direction:column; min-width:0; }
+  .left { width:50%; } .right { width:50%; border-left:3px solid #000; }
+  #app.full .right { display:none; } #app.full .left { width:100%; }
+  .panel { display:none; flex-direction:column; height:100%; min-height:0; }
+  .panel.active { display:flex; }
+  .frameWrap { flex:1; min-height:0; overflow:auto; background:#000; display:flex; align-items:flex-start; justify-content:center; }
+  .stage { position:relative; display:inline-block; user-select:none; }
+  .stage img { display:block; width:100%; }
+  #frame2 { cursor:crosshair; } #frame3 { cursor:crosshair; }
+  .dot, .dotp { position:absolute; width:13px; height:13px; margin:-7px 0 0 -7px; border-radius:50%;
+                border:2px solid #fff; font-size:9px; line-height:10px; color:#fff; text-align:center; }
+  .dot { background:var(--ok); } .dotp { background:#ff4d4d; }
+  .vbox { position:absolute; border:2px solid; }
+  .vbox span { position:absolute; top:-18px; left:0; font-size:11px; padding:0 4px; color:#fff; }
+  #rubber { position:absolute; border:2px dashed #fff; background:rgba(255,255,255,.12); display:none; pointer-events:none; }
+  .startRow { display:inline-flex; align-items:center; gap:5px; margin-right:12px; }
+  .startRow .sw { width:11px; height:11px; border-radius:50%; }
+  .startRow input { max-width:118px; }
+  .startRow .stClr { border:none; background:transparent; color:#9aa0a6; cursor:pointer; padding:0 2px; }
+  .controls { padding:12px 14px; display:flex; flex-direction:column; gap:10px; overflow:auto; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; } .grow { flex:1; }
+  select, input, button { font-size:14px; padding:8px 10px; border-radius:6px; border:1px solid #3a3d44; }
+  select, input { background:#1e2127; color:#eee; } select { flex:1; } input { min-width:0; }
+  button { background:var(--accent); color:#fff; border:none; cursor:pointer; }
+  button.ghost { background:#2a2d34; } button.ghost.on { outline:2px solid var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  fieldset { border:1px solid var(--line); border-radius:8px; padding:10px; margin:0; }
+  legend { padding:0 6px; color:var(--muted); font-size:13px; }
+  .status { font-size:13px; color:var(--muted); min-height:16px; white-space:pre-wrap; }
+  .hint { color:var(--muted); font-size:13px; line-height:1.6; }
+  code { background:#1e2127; padding:2px 6px; border-radius:4px; color:#9ecbff; }
+  #map { flex:1; min-height:0; }
+  #readout { padding:8px 12px; background:var(--bar); color:#6cf; font-size:13px; cursor:copy; font-family:ui-monospace,monospace; }
+  .head { padding:9px 14px; font-weight:600; background:var(--bar); display:flex; gap:8px; align-items:center; }
+  .head input.small { max-width:190px; flex:none; width:190px; }
+  .barRow { padding:8px 12px; background:var(--bar); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .chip { display:inline-flex; align-items:center; gap:6px; padding:4px 6px 4px 10px; border-radius:14px;
+          border:1px solid #3a3d44; background:#1e2127; color:#eee; font-size:13px; cursor:pointer; }
+  .chip .sw { width:11px; height:11px; border-radius:50%; }
+  .chip.on { outline:2px solid var(--accent); }
+  .chip .n { color:var(--muted); font-size:12px; }
+  .chip .del { border:none; background:transparent; color:#9aa0a6; cursor:pointer; font-size:14px; padding:0 2px; }
+  .chip .del:hover { color:#ff6b6b; }
+  .thumbs { display:flex; gap:8px; padding:10px 12px; overflow-x:auto; background:var(--bar); min-height:84px; align-items:flex-start; }
+  .thumb { position:relative; flex:none; width:96px; border:1px solid #3a3d44; border-radius:6px; overflow:hidden;
+           background:#000; cursor:pointer; }
+  .thumb img { display:block; width:100%; height:64px; object-fit:cover; }
+  .thumb .cap { font-size:11px; color:#cfd2d6; text-align:center; padding:2px 0; background:#16181d; }
+  .thumb .x { position:absolute; top:2px; right:2px; width:18px; height:18px; border:none; border-radius:50%;
+              background:rgba(0,0,0,.6); color:#fff; cursor:pointer; font-size:12px; line-height:18px; padding:0; }
+  .thumb .x:hover { background:#ff5252; }
+  .thumbs .empty { color:var(--muted); font-size:13px; align-self:center; }
+  /* step 4 run progress */
+  .runPanel { flex:1; min-height:0; overflow:auto; padding:16px; display:flex; flex-direction:column; gap:14px; }
+  .runHead { display:flex; align-items:center; gap:10px; }
+  .runPhase { font-size:16px; font-weight:600; }
+  .runMuted { color:var(--muted); font-size:13px; }
+  .spin { width:18px; height:18px; border:3px solid #2a2d34; border-top-color:var(--accent);
+          border-radius:50%; animation:spin .8s linear infinite; flex:none; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .runIcon { width:20px; height:20px; border-radius:50%; display:grid; place-items:center;
+             font-size:13px; font-weight:700; color:#07130b; flex:none; }
+  .runIcon.ok { background:var(--ok); } .runIcon.err { background:#ff5252; color:#fff; }
+  .runStages { display:flex; flex-wrap:wrap; gap:8px; }
+  .rstage { display:flex; align-items:center; gap:7px; padding:7px 12px; border-radius:8px;
+            background:#1a1d23; border:1px solid var(--line); color:var(--muted); font-size:13px; }
+  .rstage .rdot { width:9px; height:9px; border-radius:50%; background:#3a3d44; flex:none; }
+  .rstage.on { color:#fff; border-color:var(--accent); background:#17233d; }
+  .rstage.on .rdot { background:var(--accent); animation:pulse 1s ease-in-out infinite; }
+  .rstage.done { color:#bfefd1; border-color:#1f5a39; background:#10231a; }
+  .rstage.done .rdot { background:var(--ok); }
+  @keyframes pulse { 50% { opacity:.35; } }
+  details.runDetails { background:#0b0c0f; border:1px solid var(--line); border-radius:8px; }
+  .runBar { height:6px; border-radius:3px; background:#1a1d23; overflow:hidden; display:none; }
+  .runBar.on { display:block; }
+  .runBar::after { content:""; display:block; height:100%; width:35%; border-radius:3px;
+                   background:var(--accent); animation:indet 1.3s ease-in-out infinite; }
+  @keyframes indet { 0% { margin-left:-35%; } 100% { margin-left:100%; } }
+  details.runDetails > summary { cursor:pointer; padding:8px 12px; color:var(--muted); font-size:13px; user-select:none; }
+  details.runDetails pre { margin:0; padding:0 12px 12px; color:#cfd2d6; font-size:12px;
+                           font-family:ui-monospace,monospace; white-space:pre-wrap; max-height:280px; overflow:auto; }
+  /* step 5 results dashboard */
+  .resultHead { padding:11px 14px; background:var(--bar); display:flex; align-items:center; gap:8px; border-bottom:1px solid #000; }
+  .resultHead .rt { font-weight:700; font-size:15px; }
+  .dlbtn { text-decoration:none; padding:6px 12px; border-radius:6px; background:#222630; color:#dfe3ea;
+           font-size:13px; border:1px solid var(--line); display:inline-flex; gap:5px; align-items:center; }
+  .dlbtn:hover { background:#2c313c; border-color:#454b57; }
+  .resultBody { flex:1; min-height:0; overflow:auto; padding:14px; display:flex; flex-direction:column; gap:14px; }
+  .resEmpty { color:var(--muted); font-size:14px; padding:32px 16px; text-align:center; }
+  .metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+  .mcard { background:var(--bar); border:1px solid var(--line); border-radius:10px; padding:12px 14px; }
+  .mcard .ml { color:var(--muted); font-size:12px; margin-bottom:6px; }
+  .mcard .mv { font-size:21px; font-weight:700; line-height:1.1; }
+  .mcard .mu { font-size:12px; color:var(--muted); font-weight:400; margin-left:3px; }
+  .sectlabel { color:var(--muted); font-size:12px; letter-spacing:.04em; text-transform:uppercase; margin:2px 0 -4px; }
+  .vehCards { display:flex; flex-direction:column; gap:8px; }
+  .vcard { display:flex; align-items:center; gap:11px; background:var(--bar); border:1px solid var(--line);
+           border-left-width:4px; border-radius:8px; padding:10px 13px; }
+  .vcard .vname { font-weight:600; font-size:14px; }
+  .vcard .vsub { color:var(--muted); font-size:12px; }
+  .vcard .vstats { margin-left:auto; text-align:right; font-size:12px; color:var(--muted); white-space:nowrap; }
+  .vcard .vstats b { color:#f0f2f5; font-weight:700; font-size:15px; }
+  .resTabs { display:flex; gap:6px; margin-bottom:-14px; }
+  .rtab { background:#21252e; border:1px solid var(--line); color:var(--muted); border-bottom:none;
+          border-radius:8px 8px 0 0; padding:8px 15px; cursor:pointer; font-size:13px; }
+  .rtab.on { background:#0b0c0f; color:#fff; }
+  .resMedia { background:#0b0c0f; border:1px solid var(--line); border-radius:0 10px 10px 10px;
+              padding:10px; min-height:220px; display:flex; align-items:center; justify-content:center; }
+  .resMedia img, .resMedia video { max-width:100%; max-height:60vh; border-radius:6px; display:block; }
+
+  /* ============================================================
+     Motion design (LottieFiles motion-design-skill) — Corporate:
+     functional feedback, directional easing, layered + staggered
+     entrances, 1/3 rule (never animate everything at once).
+     ============================================================ */
+
+  /* Panel = page transition: fade + small rise on becoming active
+     (entrance -> decelerate / emphasized easing). */
+  .panel.active { animation:panelIn var(--dur-slow) var(--ease-emph) both; }
+  @keyframes panelIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:none; } }
+
+  /* Buttons — press feedback (the primary micro-interaction). Hover lifts,
+     press settles with a quick squash; secondary shadow supports the motion. */
+  button, .dlbtn, .rtab, .chip, .step, .thumb {
+    transition:transform var(--dur-quick) var(--ease), background var(--dur-quick) var(--ease),
+               border-color var(--dur-quick) var(--ease), color var(--dur-quick) var(--ease),
+               opacity var(--dur-quick) var(--ease), box-shadow var(--dur-quick) var(--ease); }
+  button:not(:disabled):hover, .dlbtn:hover { transform:translateY(-1px); box-shadow:0 3px 12px rgba(0,0,0,.35); }
+  button:not(:disabled):active { transform:scale(.97); box-shadow:none; }
+
+  /* Stepper — the active number gently pops on state change (emphasis = scale). */
+  .step .num { transition:background var(--dur) var(--ease), color var(--dur) var(--ease), transform var(--dur) var(--ease-out); }
+  .step.active .num { transform:scale(1.12); }
+  .step:not(.active):hover { color:#cfd2d6; }
+
+  /* GCP / pending dots — light-weight pop-in (scale from 0, slight overshoot). */
+  .dot, .dotp { animation:dotPop 220ms var(--ease-out) both; }
+  @keyframes dotPop { 0% { opacity:0; transform:scale(0); } 60% { transform:scale(1.15); } 100% { opacity:1; transform:scale(1); } }
+
+  /* Step 5 dashboard — staggered reveal (hero metrics first, then vehicle
+     cards), wave budget < 500ms. Cards rise + fade with emphasized easing. */
+  .mcard, .vcard { animation:riseIn var(--dur) var(--ease-emph) both; }
+  @keyframes riseIn { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:none; } }
+  .metrics .mcard:nth-child(1) { animation-delay:40ms; }
+  .metrics .mcard:nth-child(2) { animation-delay:100ms; }
+  .metrics .mcard:nth-child(3) { animation-delay:160ms; }
+  .vehCards .vcard:nth-child(1) { animation-delay:220ms; }
+  .vehCards .vcard:nth-child(2) { animation-delay:280ms; }
+  .vehCards .vcard:nth-child(3) { animation-delay:340ms; }
+
+  /* Thumbnails + vehicle chips — micro cascade on appearance. */
+  .thumb, .chip { animation:riseIn 200ms var(--ease-out) both; }
+
+  /* Success feedback — a brief highlight flash (state change = color + subtle
+     scale; firm, no overshoot for a forensic tool). Toggle via .flash-ok class. */
+  .flash-ok { animation:flashOk 600ms var(--ease) both; }
+  @keyframes flashOk { 0% { background:rgba(40,208,122,.18); } 100% { background:transparent; } }
+
+  /* Accessibility — honour reduced-motion (context-adaptation): keep state
+     changes instant, drop spatial motion and loops. */
+  @media (prefers-reduced-motion: reduce) {
+    *, .panel.active, .dot, .dotp, .mcard, .vcard, .thumb, .chip {
+      animation:none !important; transition-duration:1ms !important; }
+    button:not(:disabled):hover, button:not(:disabled):active, .dlbtn:hover { transform:none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="topbar"><span class="title">事故重建工作台</span><span class="status" id="sceneTag"></span></div>
+  <nav class="stepper">
+    <div class="step active" data-step="1"><span class="num">1</span>影片 / 下載<span class="arrow">›</span></div>
+    <div class="step" data-step="2"><span class="num">2</span>校正（GCP）<span class="arrow">›</span></div>
+    <div class="step" data-step="3"><span class="num">3</span>標記車輛<span class="arrow">›</span></div>
+    <div class="step" data-step="4"><span class="num">4</span>執行<span class="arrow">›</span></div>
+    <div class="step" data-step="5"><span class="num">5</span>結果</div>
+  </nav>
+</header>
+
+<div id="app" class="full">
+  <div class="pane left">
+    <!-- step 1: choose / download video -->
+    <section class="panel active" data-step="1">
+      <div class="controls">
+        <fieldset>
+          <legend>選擇影片</legend>
+          <div class="row"><select id="videoSelect"><option>載入中…</option></select>
+            <button class="ghost" id="refreshBtn" title="重新整理">↻</button></div>
+          <div class="row" style="margin-top:8px">
+            <button id="confirmVideoBtn">確認選取這支影片 → 校正</button>
+            <span class="status" id="selStatus"></span>
+          </div>
+          <img id="videoPreview" style="display:none;width:50%;margin-top:8px;border-radius:6px;border:1px solid #3a3d44;" alt="影片第一幀" />
+        </fieldset>
+        <fieldset>
+          <legend>從 YouTube 下載（自動存到 videos/）</legend>
+          <div class="row"><input class="grow" id="ytUrl" placeholder="YouTube 網址" /></div>
+          <div class="row" style="margin-top:8px">
+            <input id="ytStart" placeholder="起(秒)" style="max-width:96px" />
+            <input id="ytEnd" placeholder="迄(秒)" style="max-width:96px" />
+            <button id="dlBtn">下載</button>
+          </div>
+          <div class="status" id="status"></div>
+        </fieldset>
+      </div>
+    </section>
+
+    <!-- step 2: calibration (clickable frame, map on right = OSM) -->
+    <section class="panel" data-step="2">
+      <div class="barRow">
+        <span class="status grow" id="pairReadout">左圖點像素、右圖點經緯度 → 加入對應點</span>
+        <button id="addPt" disabled>加入對應點</button>
+      </div>
+      <div class="frameWrap"><div class="stage"><img id="frame2" /></div></div>
+      <div class="controls">
+        <div class="status" id="gcpList" style="max-height:120px;overflow-y:auto;">尚無控制點</div>
+        <div class="row"><button id="calibBtn">存檔並校正</button>
+          <button class="ghost" id="undoBtn">移除上一點</button>
+          <span class="status grow" id="calibResult"></span></div>
+      </div>
+      <div class="controls" id="anchorBox">
+        <div class="status">🎯 2D 對齊錨點：在右圖地圖點出真實位置 → 按「填入」帶入座標。撞擊點＋每車出現點，重算後 2D 圖會沿道路拉到正確長度。</div>
+        <div class="row">撞擊點
+          <input id="impLat" placeholder="lat" style="max-width:120px" />
+          <input id="impLon" placeholder="lon" style="max-width:120px" />
+          <button class="ghost" data-fill="imp">填入點選</button></div>
+        <div id="vehAnchorRows"></div>
+        <div class="row"><button id="saveAnchors">儲存錨點</button>
+          <span class="status grow" id="anchorMsg"></span></div>
+      </div>
+    </section>
+
+    <!-- step 3: mark objects by dragging boxes (no map, full width) -->
+    <section class="panel" data-step="3">
+      <div class="barRow">
+        新增 <select id="clsSelect"></select>
+        <button id="addObj">＋ 物件</button>
+        ｜影格 <input id="f3num" type="number" value="0" style="max-width:90px" />
+        <button class="ghost" id="f3load">讀格</button>
+        <button id="vehSave">存檔</button>
+        <span class="status grow" id="vehStatus">新增物件 → 選它 → 在影片上拖曳框出（同一物件可在不同影格各框一次）</span>
+      </div>
+      <div class="barRow" id="objBar"><span class="status">尚無物件，先在上方新增。</span></div>
+      <div class="barRow" id="startBar"><span class="status">起點經緯度：先新增物件。</span></div>
+      <div class="frameWrap"><div class="stage" id="stage3"><img id="frame3" /><div id="rubber"></div></div></div>
+      <div class="thumbs" id="thumbs"></div>
+    </section>
+
+    <!-- step 4: settings + run the pipeline, stream progress -->
+    <section class="panel" data-step="4">
+      <div class="barRow" style="gap:10px 14px">
+        <span class="status">分析影格
+          <input id="setStartFrame" type="number" placeholder="起" style="max-width:72px" />–<input id="setEndFrame" type="number" placeholder="迄" style="max-width:72px" />
+          <span class="status" id="frameDefHint"></span></span>
+        <span class="status">撞擊幀
+          <select id="setImpactMode" style="width:auto"><option value="auto">自動偵測</option><option value="manual">手動指定</option></select>
+          <input id="setImpactFrame" type="number" placeholder="幀" style="max-width:80px;display:none" /></span>
+        <span class="status">被撞/停下車 <select id="setStop" style="width:auto"></select></span>
+        <span class="status">移動車(對齊) <select id="setMoving" style="width:auto"></select></span>
+        <span class="status">追蹤閘
+          <select id="setGates" style="width:auto">
+            <option value="strict">strict（預設）</option>
+            <option value="loose">loose（平順倒車/退後）</option>
+            <option value="off">off（全關）</option>
+          </select></span>
+        <span class="status">被撞車路徑
+          <select id="setStruck" style="width:auto">
+            <option value="">撞擊點截斷（預設）</option>
+            <option value="1">顯示完整推進</option>
+          </select></span>
+        <span class="status">停止畫線速度
+          <input id="setMinSpeed" type="number" step="0.5" placeholder="3" style="max-width:64px" />
+          <span style="color:var(--muted)">km/h↓停線</span></span>
+        <button class="ghost" id="saveSettings">儲存設定</button>
+        <span class="status" id="settingsHint"></span>
+      </div>
+      <div class="barRow">
+        <button id="runBtn">▶ 執行 pipeline（含追蹤）</button>
+        <button class="ghost" id="reconBtn">↻ 重算結果（不重追蹤）</button>
+        <span class="status grow" id="runStatus">追蹤約數分鐘；改完上方設定可只「重算結果」（秒級）</span>
+        <button class="ghost" id="toResult" disabled>看結果 →</button>
+      </div>
+      <div class="runPanel">
+        <div class="runHead">
+          <span id="runSpin" class="spin" style="display:none"></span>
+          <span id="runIcon" class="runIcon" style="display:none"></span>
+          <span id="runPhase" class="runPhase">尚未執行</span>
+          <span id="runElapsed" class="runMuted"></span>
+          <button id="stopBtn" class="ghost" style="display:none;margin-left:auto">■ 停止</button>
+        </div>
+        <div id="runBar" class="runBar"></div>
+        <div id="runStages" class="runStages"></div>
+        <div id="runHint" class="runMuted"></div>
+        <details class="runDetails"><summary>詳細記錄（技術 log）</summary><pre id="runLog"></pre></details>
+      </div>
+    </section>
+
+    <!-- step 5: results dashboard (interactive map is the right pane) -->
+    <section class="panel" data-step="5">
+      <div class="resultHead">
+        <span class="rt">重建結果</span>
+        <span class="status" id="resultStatus"></span>
+        <span style="flex:1"></span>
+        <a id="dlKml" class="dlbtn" style="display:none">↓ KML</a>
+        <a id="dlCsv" class="dlbtn" style="display:none">↓ CSV</a>
+      </div>
+      <div class="resultBody">
+        <div class="resEmpty" id="resEmpty">尚無結果 —— 先到 ④ 執行。</div>
+        <div id="resContent" style="display:none">
+          <div class="metrics" id="resMetrics"></div>
+          <div class="sectlabel">車輛（顏色對應右側地圖）</div>
+          <div class="vehCards" id="resVehCards"></div>
+          <div class="resTabs">
+            <button class="rtab on" data-tab="figure">原始辨識軌跡圖</button>
+            <button class="rtab" data-tab="video">追蹤影片</button>
+          </div>
+          <div class="resMedia">
+            <img id="resFigure" style="display:none" />
+            <video id="resVideo" controls loop style="display:none;background:#000"></video>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="pane right">
+    <div class="head">地圖
+      <input id="latlon" class="grow" placeholder="lat, lon 跳轉（Enter）" /></div>
+    <div id="map"></div>
+    <div id="readout" title="點此複製">點地圖任一點即可讀取經緯度（再點這列可複製）</div>
+  </div>
+</div>
+
+<script>
+const CENTER = __CENTER__, SOURCE = "__SOURCE__";
+const $ = (id) => document.getElementById(id);
+const app = $("app");
+let gcps = [], pendingPixel = null, lastLatLon = null;
+/* Success feedback: brief green flash on a saved element (state-feedback). */
+function flashOk(el) { if (!el) return; el.classList.remove("flash-ok"); void el.offsetWidth; el.classList.add("flash-ok"); }
+
+/* step 3 marking: arbitrary objects, each with multiple boxes across frames */
+const CLASSES = [
+  { key: "motorcycle", label: "機車",   bgr: [0, 196, 255] },
+  { key: "motorbike",  label: "摩托車", bgr: [80, 80, 255] },
+  { key: "car",        label: "汽車",   bgr: [240, 140, 40] },
+  { key: "taxi",       label: "計程車", bgr: [0, 230, 255] },
+  { key: "person",     label: "人",     bgr: [120, 220, 120] },
+  { key: "bicycle",    label: "腳踏車", bgr: [255, 120, 200] },
+];
+let markObjects = [], curObjId = null, objSeq = 0;
+const rgbCss = (bgr) => `rgb(${bgr[2]},${bgr[1]},${bgr[0]})`;
+const curObject = () => markObjects.find((o) => o.id === curObjId) || null;
+
+/* ---- stepper: map only shows on step 2 (and 5) ---- */
+let curStep = "1";
+function showStep(n) {
+  curStep = n;
+  document.querySelectorAll(".step").forEach((s) => s.classList.toggle("active", s.dataset.step === n));
+  document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.dataset.step === n));
+  // steps 2/3/5 show the map pane (3 = pick each vehicle's start by clicking it).
+  app.classList.toggle("full", !(n === "2" || n === "3" || n === "5"));
+  if (n === "2" || n === "3" || n === "5") setTimeout(() => map.invalidateSize(), 50);
+  if (n === "3") renderStartMarkersOnMap();
+  if (n === "5") loadResults();
+  if (n === "4") loadSettings();
+}
+document.querySelectorAll(".step").forEach((s) => s.addEventListener("click", () => showStep(s.dataset.step)));
+
+/* ---- source video + scene ---- */
+const sel = $("videoSelect");
+function frameURL(idx) {
+  return "/api/frame?index=" + (Number(idx) || 0) + "&video=" + sel.value.split("/").map(encodeURIComponent).join("/");
+}
+async function loadVideos(selectPath) {
+  const { videos } = await (await fetch("/api/videos")).json();
+  sel.innerHTML = "";
+  if (!videos.length) { sel.innerHTML = "<option>（無影片）</option>"; return; }
+  for (const v of videos) { const o = document.createElement("option"); o.value = v; o.textContent = v; sel.appendChild(o); }
+  sel.value = (selectPath && videos.includes(selectPath)) ? selectPath : (videos.includes(SOURCE) ? SOURCE : videos[0]);
+  await loadScene();
+}
+function updateVideoPreview() {
+  const prev = $("videoPreview");
+  if (!sel.value) { prev.style.display = "none"; return; }
+  prev.src = frameURL(0);
+  prev.style.display = "block";
+}
+async function loadScene() {
+  updateVideoPreview();
+  const s = await (await fetch("/api/scene?video=" + encodeURIComponent(sel.value))).json();
+  gcps = s.gcps || []; pendingPixel = null;
+  loadObjects(s.vehicle_boxes || {});
+  const win = (s.start_frame != null && s.end_frame != null) ? `，影格 ${s.start_frame}–${s.end_frame}` : "";
+  $("sceneTag").textContent = s.scene ? ("場景：" + s.scene + "（GCP " + gcps.length + win + "）") : "（此影片無對應場景）";
+  if (s.center) map.setView(s.center, 18);
+  // Default the marking frame to the scene window start so the tracked vehicles
+  // are actually on screen (frame 0 is usually before they appear).
+  if (s.start_frame != null) $("f3num").value = s.start_frame;
+  $("frame2").src = frameURL(0);
+  $("frame3").src = frameURL($("f3num").value);
+  renderDots(); renderGcpList(); renderObjBar(); renderStartInputs(); renderVehBoxes(); renderThumbs(); updatePair();
+  renderAnchors(s.vehicles || [], s.true_impact, s.true_vehicle_starts || {});
+  clearRoute(); $("resFigure").style.display = "none"; $("resVideo").style.display = "none";
+}
+/* ---- step 2: 2D-alignment geo anchors (impact + per-vehicle real start) ---- */
+function renderAnchors(vehicles, impact, starts) {
+  $("impLat").value = impact ? impact[0].toFixed(7) : "";
+  $("impLon").value = impact ? impact[1].toFixed(7) : "";
+  $("vehAnchorRows").innerHTML = vehicles.map((v) => {
+    const s = starts[v.name] || [];
+    return `<div class="row">${v.display}出現點
+      <input id="vs_${v.name}_lat" placeholder="lat" style="max-width:120px" value="${s[0] != null ? s[0].toFixed(7) : ""}" />
+      <input id="vs_${v.name}_lon" placeholder="lon" style="max-width:120px" value="${s[1] != null ? s[1].toFixed(7) : ""}" />
+      <button class="ghost" data-fill="vs_${v.name}">填入點選</button></div>`;
+  }).join("");
+}
+document.addEventListener("click", (e) => {
+  const tgt = e.target.dataset && e.target.dataset.fill;
+  if (!tgt) return;
+  if (!lastLatLon) { $("anchorMsg").textContent = "先在右圖地圖點一個位置"; return; }
+  // Impact fields are impLat/impLon; vehicle fields are vs_<name>_lat/_lon.
+  const latEl = $(tgt + "Lat") || $(tgt + "_lat");
+  const lonEl = $(tgt + "Lon") || $(tgt + "_lon");
+  if (latEl) latEl.value = lastLatLon[0].toFixed(7);
+  if (lonEl) lonEl.value = lastLatLon[1].toFixed(7);
+  $("anchorMsg").textContent = "已填入 " + lastLatLon[0].toFixed(6) + ", " + lastLatLon[1].toFixed(6);
+});
+function pairVal(latId, lonId) {
+  const la = parseFloat($(latId).value), lo = parseFloat($(lonId).value);
+  return (Number.isFinite(la) && Number.isFinite(lo)) ? [la, lo] : null;
+}
+$("saveAnchors").addEventListener("click", async () => {
+  const starts = {};
+  $("vehAnchorRows").querySelectorAll("[id^='vs_'][id$='_lat']").forEach((el) => {
+    const name = el.id.slice(3, -4);
+    const v = pairVal("vs_" + name + "_lat", "vs_" + name + "_lon");
+    if (v) starts[name] = v;
+  });
+  const body = { video: sel.value, true_impact: pairVal("impLat", "impLon"), true_vehicle_starts: starts };
+  const res = await (await fetch("/api/anchors", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })).json();
+  $("anchorMsg").textContent = res.ok ? "✅ 已存錨點，回 step④ 執行即用新值重算" : ("失敗：" + res.error);
+  if (res.ok) flashOk($("anchorBox"));
+});
+sel.addEventListener("change", loadScene);
+$("refreshBtn").addEventListener("click", () => loadVideos());
+$("f3load").addEventListener("click", () => { $("frame3").src = frameURL($("f3num").value); });
+$("frame2").addEventListener("load", renderDots);
+$("frame3").addEventListener("load", renderVehBoxes);
+
+/* ---- step 2: GCP calibration ---- */
+const frame2 = $("frame2"), stage2 = frame2.parentElement;
+frame2.addEventListener("click", (e) => {
+  const r = frame2.getBoundingClientRect();
+  pendingPixel = [Math.round((e.clientX - r.left) / r.width * frame2.naturalWidth),
+                  Math.round((e.clientY - r.top) / r.height * frame2.naturalHeight)];
+  renderDots(); updatePair();
+});
+function renderDots() {
+  stage2.querySelectorAll(".dot,.dotp").forEach((d) => d.remove());
+  if (!frame2.naturalWidth) return;
+  gcps.forEach((g, i) => stage2.appendChild(mkDot(g.pixel, "dot", i + 1, frame2)));
+  if (pendingPixel) stage2.appendChild(mkDot(pendingPixel, "dotp", "", frame2));
+}
+function mkDot(px, cls, label, img) {
+  const d = document.createElement("div"); d.className = cls;
+  d.style.left = (px[0] / img.naturalWidth * 100) + "%"; d.style.top = (px[1] / img.naturalHeight * 100) + "%";
+  if (label) d.textContent = label; return d;
+}
+function updatePair() {
+  $("addPt").disabled = !(pendingPixel && lastLatLon);
+  $("pairReadout").textContent = (pendingPixel ? `像素 ${pendingPixel.join(",")}` : "左圖點像素") + " ｜ " +
+    (lastLatLon ? `經緯度 ${lastLatLon[0].toFixed(6)},${lastLatLon[1].toFixed(6)}` : "右圖點經緯度");
+}
+function renderGcpList() {
+  $("gcpList").textContent = gcps.length ? gcps.map((g, i) => `#${i + 1} px(${g.pixel.join(",")}) ${g.lat.toFixed(6)},${g.lon.toFixed(6)}`).join("\n") : "尚無控制點";
+}
+$("addPt").addEventListener("click", () => {
+  if (!(pendingPixel && lastLatLon)) return;
+  gcps.push({ name: "g" + (gcps.length + 1), pixel: pendingPixel, lat: lastLatLon[0], lon: lastLatLon[1] });
+  pendingPixel = null; updatePair(); renderDots(); renderGcpList();
+});
+$("undoBtn").addEventListener("click", () => { gcps.pop(); renderDots(); renderGcpList(); });
+$("calibBtn").addEventListener("click", async () => {
+  const out = $("calibResult"); out.textContent = "計算中…";
+  const res = await (await fetch("/api/calibrate", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ gcps, video: sel.value }) })).json();
+  if (!res.ok) { out.textContent = "失敗：" + res.error; return; }
+  document.querySelector('.step[data-step="2"]').classList.add("done");
+  if (!res.span_warning) flashOk(out.closest(".controls"));
+  out.textContent = `${res.method}\n平均 ${res.mean} m、最大 ${res.max} m、控制點範圍 ${res.span_m} m\n` +
+    res.per_point.map((p) => `${p.name}:${p.err}m${p.inlier ? "" : "(剔)"}`).join("　");
+  if (res.span_warning) {
+    out.textContent += "\n⚠️ " + res.span_warning;
+    out.style.color = "#c0392b";
+  } else {
+    out.style.color = "";
+  }
+});
+
+/* ---- step 3: mark objects, each with multiple boxes across frames ---- */
+const frame3 = $("frame3"), stage3 = $("stage3"), rubber = $("rubber");
+
+/* class picker (filled once) */
+(function buildClassSelect() {
+  const sel = $("clsSelect");
+  CLASSES.forEach((c) => { const o = document.createElement("option"); o.value = c.key; o.textContent = c.label; sel.appendChild(o); });
+})();
+
+/* normalise saved JSON (new {objects:[...]} or legacy {name:{frame,box,bgr}}) */
+function loadObjects(raw) {
+  markObjects = []; objSeq = 0; curObjId = null;
+  const mk = (cls, name, label, bgr, boxes, startLL) => {
+    const id = "o" + (++objSeq);
+    markObjects.push({ id, cls, name, label, bgr, boxes, start_latlon: startLL || null });
+    return id;
+  };
+  if (raw && Array.isArray(raw.objects)) {
+    raw.objects.forEach((o) => {
+      const def = CLASSES.find((c) => c.key === o.cls);
+      const boxes = (o.boxes || []).map((b) => ({ frame: b.frame || 0, box: b.box }));
+      mk(o.cls || "object", o.name || o.cls || "object", o.label || (def ? def.label : o.cls),
+         o.bgr || (def ? def.bgr : [255, 255, 255]), boxes, o.start_latlon);
+    });
+  } else if (raw && typeof raw === "object") {
+    Object.entries(raw).forEach(([name, v]) => {
+      if (!v || !v.box) return;                       // legacy flat format
+      const def = CLASSES.find((c) => c.key === name);
+      mk(name, name, def ? def.label : name, v.bgr || (def ? def.bgr : [255, 255, 255]),
+         [{ frame: v.frame || 0, box: v.box }]);
+    });
+  }
+  curObjId = markObjects.length ? markObjects[0].id : null;
+}
+
+/* a display label that disambiguates same-class objects: 機車 / 機車 2 / … */
+function displayLabel(obj) {
+  const sameCls = markObjects.filter((o) => o.cls === obj.cls);
+  if (sameCls.length < 2) return obj.label;
+  return obj.label + " " + (sameCls.indexOf(obj) + 1);
+}
+
+$("addObj").addEventListener("click", () => {
+  const key = $("clsSelect").value, def = CLASSES.find((c) => c.key === key);
+  const same = markObjects.filter((o) => o.cls === key).length;
+  const name = same ? key + (same + 1) : key;        // unique downstream name
+  const id = "o" + (++objSeq);
+  markObjects.push({ id, cls: key, name, label: def.label, bgr: def.bgr.slice(), boxes: [] });
+  curObjId = id;
+  renderObjBar(); renderStartInputs(); renderThumbs();
+  $("vehStatus").textContent = `已新增「${def.label}」→ 在影片上拖曳框出它`;
+});
+
+function renderObjBar() {
+  const bar = $("objBar"); bar.innerHTML = "";
+  if (!markObjects.length) { bar.innerHTML = '<span class="status">尚無物件，先在上方新增。</span>'; return; }
+  markObjects.forEach((o) => {
+    const chip = document.createElement("span");
+    chip.className = "chip" + (o.id === curObjId ? " on" : "");
+    chip.innerHTML = `<span class="sw" style="background:${rgbCss(o.bgr)}"></span>` +
+      `<span>${displayLabel(o)}</span><span class="n">${o.boxes.length} 框${o.start_latlon ? " · ⊙起點" : ""}</span>`;
+    chip.onclick = () => { curObjId = o.id; renderObjBar(); renderThumbs(); };
+    const del = document.createElement("button"); del.className = "del"; del.textContent = "✕"; del.title = "刪除物件";
+    del.onclick = (e) => {
+      e.stopPropagation();
+      markObjects = markObjects.filter((x) => x.id !== o.id);
+      if (curObjId === o.id) curObjId = markObjects.length ? markObjects[0].id : null;
+      renderObjBar(); renderStartInputs(); renderVehBoxes(); renderThumbs();
+    };
+    chip.appendChild(del); bar.appendChild(chip);
+  });
+}
+
+/* draw every object's box that belongs to the current frame */
+function renderVehBoxes() {
+  stage3.querySelectorAll(".vbox").forEach((d) => d.remove());
+  if (!frame3.naturalWidth) return;
+  const cur = Number($("f3num").value) || 0;
+  markObjects.forEach((o) => {
+    const hit = o.boxes.find((b) => b.frame === cur);
+    if (!hit) return;
+    const [x1, y1, x2, y2] = hit.box, c = rgbCss(o.bgr);
+    const d = document.createElement("div"); d.className = "vbox"; d.style.borderColor = c;
+    if (o.id !== curObjId) d.style.opacity = ".55";
+    d.style.left = (x1 / frame3.naturalWidth * 100) + "%"; d.style.top = (y1 / frame3.naturalHeight * 100) + "%";
+    d.style.width = ((x2 - x1) / frame3.naturalWidth * 100) + "%"; d.style.height = ((y2 - y1) / frame3.naturalHeight * 100) + "%";
+    const s = document.createElement("span"); s.textContent = displayLabel(o); s.style.background = c; d.appendChild(s);
+    stage3.appendChild(d);
+  });
+}
+
+/* thumbnail strip (photo-like) of the selected object's boxes, ordered by frame */
+function renderThumbs() {
+  const wrap = $("thumbs"); wrap.innerHTML = "";
+  const obj = curObject();
+  if (!obj) { wrap.innerHTML = '<span class="empty">選一個物件以檢視它的框選</span>'; return; }
+  if (!obj.boxes.length) { wrap.innerHTML = `<span class="empty">「${displayLabel(obj)}」尚未框選，拖曳影片新增</span>`; return; }
+  const vid = sel.value.split("/").map(encodeURIComponent).join("/");
+  obj.boxes.slice().sort((a, b) => a.frame - b.frame).forEach((bx) => {
+    const t = document.createElement("div"); t.className = "thumb"; t.title = "點此跳到影格 " + bx.frame;
+    t.style.borderColor = rgbCss(obj.bgr);
+    const img = document.createElement("img");
+    img.src = `/api/crop?index=${bx.frame}&box=${bx.box.join(",")}&video=${vid}`;
+    img.onerror = () => { img.style.display = "none"; };
+    const cap = document.createElement("div"); cap.className = "cap"; cap.textContent = "影格 " + bx.frame;
+    const x = document.createElement("button"); x.className = "x"; x.textContent = "✕"; x.title = "刪除此框";
+    x.onclick = (e) => {
+      e.stopPropagation();
+      obj.boxes = obj.boxes.filter((b) => b.frame !== bx.frame);
+      renderObjBar(); renderVehBoxes(); renderThumbs();
+    };
+    t.onclick = () => { $("f3num").value = bx.frame; frame3.src = frameURL(bx.frame); };
+    t.appendChild(img); t.appendChild(cap); t.appendChild(x); wrap.appendChild(t);
+  });
+}
+
+let drag = null;
+frame3.addEventListener("mousedown", (e) => {
+  if (!curObject()) { $("vehStatus").textContent = "請先新增並選一個物件"; return; }
+  drag = { r: frame3.getBoundingClientRect() };
+  drag.x0 = e.clientX - drag.r.left; drag.y0 = e.clientY - drag.r.top;
+  rubber.style.display = "block"; setRubber(drag.x0, drag.y0, 0, 0); e.preventDefault();
+});
+window.addEventListener("mousemove", (e) => {
+  if (!drag) return;
+  const x = e.clientX - drag.r.left, y = e.clientY - drag.r.top;
+  setRubber(Math.min(x, drag.x0), Math.min(y, drag.y0), Math.abs(x - drag.x0), Math.abs(y - drag.y0));
+});
+window.addEventListener("mouseup", (e) => {
+  if (!drag) return;
+  const x = e.clientX - drag.r.left, y = e.clientY - drag.r.top;
+  const x1 = Math.min(x, drag.x0), y1 = Math.min(y, drag.y0), x2 = Math.max(x, drag.x0), y2 = Math.max(y, drag.y0);
+  const r = drag.r; drag = null; rubber.style.display = "none";
+  if (x2 - x1 < 4 || y2 - y1 < 4) return;
+  const obj = curObject(); if (!obj) return;
+  const toNat = (v, disp, nat) => Math.round(v / disp * nat);
+  const frame = Number($("f3num").value) || 0;
+  const box = [toNat(x1, r.width, frame3.naturalWidth), toNat(y1, r.height, frame3.naturalHeight),
+               toNat(x2, r.width, frame3.naturalWidth), toNat(y2, r.height, frame3.naturalHeight)];
+  obj.boxes = obj.boxes.filter((b) => b.frame !== frame);   // one box per frame per object
+  obj.boxes.push({ frame, box });
+  renderObjBar(); renderVehBoxes(); renderThumbs();
+  $("vehStatus").textContent = `已框「${displayLabel(obj)}」（影格 ${frame}，共 ${obj.boxes.length} 框）`;
+});
+function setRubber(l, t, w, h) { rubber.style.left = l + "px"; rubber.style.top = t + "px"; rubber.style.width = w + "px"; rubber.style.height = h + "px"; }
+
+/* per-vehicle START lat/lon: the recognised route departs from here (step 3).
+   Type/paste coordinates (copy them from the step ②/⑤ map readout). */
+function renderStartInputs() {
+  const bar = $("startBar"); bar.innerHTML = "";
+  if (!markObjects.length) { bar.innerHTML = '<span class="status">起點經緯度：先新增物件。</span>'; return; }
+  const hint = document.createElement("span");
+  hint.className = "status"; hint.textContent = "起點經緯度（辨識路線從此出發；選車輛後在右側地圖點選，或直接輸入/貼上）：";
+  bar.appendChild(hint);
+  markObjects.forEach((o) => {
+    const ll = o.start_latlon || ["", ""];
+    const row = document.createElement("span"); row.className = "startRow";
+    row.innerHTML =
+      `<span class="sw" style="background:${rgbCss(o.bgr)}"></span><b>${displayLabel(o)}</b>` +
+      `<input class="stLat" data-id="${o.id}" placeholder="lat" value="${ll[0]}">` +
+      `<input class="stLon" data-id="${o.id}" placeholder="lon" value="${ll[1]}">` +
+      `<button class="stClr" data-id="${o.id}" title="清除起點">✕</button>`;
+    bar.appendChild(row);
+  });
+}
+function readStart(id) {
+  const obj = markObjects.find((o) => o.id === id); if (!obj) return;
+  const lat = parseFloat($("startBar").querySelector(`.stLat[data-id="${id}"]`).value);
+  const lon = parseFloat($("startBar").querySelector(`.stLon[data-id="${id}"]`).value);
+  obj.start_latlon = (Number.isFinite(lat) && Number.isFinite(lon)) ? [lat, lon] : null;
+  renderObjBar(); renderStartMarkersOnMap();
+}
+$("startBar").addEventListener("input", (e) => {
+  const id = e.target.dataset && e.target.dataset.id;
+  if (id && (e.target.classList.contains("stLat") || e.target.classList.contains("stLon"))) readStart(id);
+});
+$("startBar").addEventListener("paste", (e) => {                 // paste "lat, lon" into lat fills both
+  const id = e.target.dataset && e.target.dataset.id;
+  if (!id || !e.target.classList.contains("stLat")) return;
+  const p = (e.clipboardData || window.clipboardData).getData("text").split(/[ ,]+/).map(Number).filter((n) => !isNaN(n));
+  if (p.length >= 2) {
+    e.preventDefault();
+    const obj = markObjects.find((o) => o.id === id); if (obj) obj.start_latlon = [p[0], p[1]];
+    renderStartInputs(); renderObjBar(); renderStartMarkersOnMap();
+  }
+});
+$("startBar").addEventListener("click", (e) => {
+  const id = e.target.dataset && e.target.dataset.id;
+  if (id && e.target.classList.contains("stClr")) {
+    const obj = markObjects.find((o) => o.id === id); if (obj) obj.start_latlon = null;
+    renderStartInputs(); renderObjBar(); renderStartMarkersOnMap();
+  }
+});
+$("f3load").addEventListener("click", renderVehBoxes);
+$("vehSave").addEventListener("click", async () => {
+  const objects = markObjects
+    .filter((o) => o.boxes.length)
+    .map((o) => ({ id: o.id, cls: o.cls, name: o.name, label: o.label, bgr: o.bgr, boxes: o.boxes, start_latlon: o.start_latlon || null }));
+  if (!objects.length) { $("vehStatus").textContent = "尚無任何框，先框出至少一個物件"; return; }
+  const res = await (await fetch("/api/vehicles", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ vehicles: { objects }, video: sel.value }) })).json();
+  $("vehStatus").textContent = res.ok ? `已存 ${objects.length} 個物件 → ${res.file}` : "失敗：" + res.error;
+  if (res.ok) document.querySelector('.step[data-step="3"]').classList.add("done");
+});
+
+/* ---- step 4: per-scene settings (impact frame, roles, gates) ---- */
+$("setImpactMode").addEventListener("change", () => {
+  $("setImpactFrame").style.display = $("setImpactMode").value === "manual" ? "inline-block" : "none";
+});
+function fillVehSelect(selId, names, current, withNone) {
+  const s = $(selId); s.innerHTML = "";
+  if (withNone) { const o = document.createElement("option"); o.value = ""; o.textContent = "（無）"; s.appendChild(o); }
+  names.forEach((n) => { const o = document.createElement("option"); o.value = n; o.textContent = n; s.appendChild(o); });
+  s.value = current || "";
+}
+async function loadSettings() {
+  if (!sel.value) return;
+  const d = await (await fetch("/api/overrides?video=" + encodeURIComponent(sel.value))).json();
+  const o = d.overrides || {}, def = d.defaults || {}, names = d.vehicles || [];
+  const win = d.frame_window || [];
+  $("setStartFrame").value = o.start_frame != null ? o.start_frame : (win[0] ?? "");
+  $("setEndFrame").value = o.end_frame != null ? o.end_frame : (win[1] ?? "");
+  $("frameDefHint").textContent = def.start_frame != null ? `（場景預設 ${def.start_frame}–${def.end_frame}；改窗需完整重跑）` : "";
+  $("setImpactMode").value = o.impact_frame != null ? "manual" : "auto";
+  $("setImpactFrame").value = o.impact_frame != null ? o.impact_frame : "";
+  $("setImpactFrame").style.display = o.impact_frame != null ? "inline-block" : "none";
+  if (win.length) $("setImpactFrame").placeholder = `${win[0]}–${win[1]}`;
+  fillVehSelect("setStop", names, o.stop_vehicle || def.stop_vehicle, true);
+  fillVehSelect("setMoving", names, o.moving_vehicle || def.moving_vehicle, true);
+  $("setGates").value = o.gates || "strict";
+  $("setStruck").value = o.struck_full ? "1" : "";
+  $("setMinSpeed").value = o.min_traj_speed != null ? o.min_traj_speed : "";
+  $("settingsHint").textContent = names.length ? "" : "（尚未標記車輛，車輛下拉為空）";
+}
+function currentOverrides() {
+  const ov = {};
+  if ($("setStartFrame").value !== "") ov.start_frame = Number($("setStartFrame").value);
+  if ($("setEndFrame").value !== "") ov.end_frame = Number($("setEndFrame").value);
+  if ($("setImpactMode").value === "manual" && $("setImpactFrame").value !== "")
+    ov.impact_frame = Number($("setImpactFrame").value);
+  if ($("setStop").value) ov.stop_vehicle = $("setStop").value;
+  if ($("setMoving").value) ov.moving_vehicle = $("setMoving").value;
+  if ($("setGates").value && $("setGates").value !== "strict") ov.gates = $("setGates").value;
+  if ($("setStruck").value === "1") ov.struck_full = true;
+  if ($("setMinSpeed").value !== "") ov.min_traj_speed = Number($("setMinSpeed").value);
+  return ov;
+}
+async function saveSettings() {
+  const res = await (await fetch("/api/overrides", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ overrides: currentOverrides(), video: sel.value }) })).json();
+  $("settingsHint").textContent = res.ok ? "已儲存設定 ✓" : ("失敗：" + res.error);
+  return res.ok;
+}
+$("saveSettings").addEventListener("click", saveSettings);
+
+/* ---- step 4: run pipeline / reconstruct, with friendly progress ---- */
+let runPoll = null, runStart = 0, runMode = "full";
+const RUN_STAGES = {
+  full: ["準備車輛與校正", "追蹤車輛（SAM2，最耗時）", "投影 / 重建 / 對齊"],
+  recon: ["重算結果（投影 / 重建 / 對齊）"],
+};
+const RUN_TYPICAL = { full: "完整追蹤通常約 2–3 分鐘（視影片長度與機器）", recon: "重算通常數秒～十幾秒" };
+/* rotating reassurance for the long tracking stage (so it never looks frozen) */
+const TRACK_REASSURE = [
+  "SAM2 正在逐格追蹤每一台車…",
+  "遇到遮蔽時會用你補的框把車重新抓回…",
+  "這一步最久，請稍候——不是卡住，是在算。",
+  "兩道閘正在過濾跳動的偵測…",
+];
+/* which stage (0-based) the log shows we're in, for the active mode */
+function stageFromLog(text, mode) {
+  if (mode === "recon") return 0;
+  if (/\[2\/2\]|Projecting/.test(text)) return 2;
+  if (/\[1\/2\]|Prompt-tracking|Ultralytics|Frames tracked/.test(text)) return 1;
+  return 0;
+}
+function renderStages(active, doneAll, failed) {
+  const stages = RUN_STAGES[runMode];
+  $("runStages").innerHTML = stages.map((name, i) => {
+    let cls = "rstage", mark = "";
+    if (doneAll || i < active) { cls += " done"; mark = "✓"; }
+    else if (i === active && !failed) cls += " on";
+    return `<span class="${cls}"><span class="rdot"></span>${name}${mark ? " " + mark : ""}</span>`;
+  }).join("");
+}
+function fmtElapsed() {
+  const s = Math.round((Date.now() - runStart) / 1000);
+  return s < 60 ? `已 ${s} 秒` : `已 ${Math.floor(s / 60)} 分 ${s % 60} 秒`;
+}
+function setRunUI(state, phaseText) {
+  const running = state === "running";
+  $("runSpin").style.display = running ? "inline-block" : "none";
+  $("runBar").classList.toggle("on", running);
+  $("stopBtn").style.display = running ? "inline-block" : "none";
+  const icon = $("runIcon");
+  icon.style.display = (state === "ok" || state === "err") ? "grid" : "none";
+  icon.className = "runIcon" + (state === "ok" ? " ok" : state === "err" ? " err" : "");
+  icon.textContent = state === "ok" ? "✓" : state === "err" ? "✕" : "";
+  $("runPhase").textContent = phaseText;
+}
+/* hint line: typical duration + a rotating reassurance during the long stage */
+function runHint(active) {
+  let hint = RUN_TYPICAL[runMode];
+  if (runMode === "full" && active === 1) {
+    const i = Math.floor((Date.now() - runStart) / 5000) % TRACK_REASSURE.length;
+    hint = TRACK_REASSURE[i] + "　·　" + hint;
+  }
+  $("runHint").textContent = hint;
+}
+async function startJob(endpoint, mode) {
+  if (!(await saveSettings())) return;     // persist settings before running
+  runMode = mode; runStart = Date.now();
+  $("runBtn").disabled = true; $("reconBtn").disabled = true; $("toResult").disabled = true;
+  $("runLog").textContent = ""; $("runStatus").textContent = "";
+  setRunUI("running", "啟動中…"); $("runElapsed").textContent = ""; renderStages(0, false, false); runHint(0);
+  const res = await (await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ video: sel.value }) })).json();
+  if (!res.ok) {
+    setRunUI("err", "無法啟動：" + res.error); $("runHint").textContent = "";
+    $("runBtn").disabled = $("reconBtn").disabled = false; return;
+  }
+  pollRun();
+}
+$("runBtn").addEventListener("click", () => startJob("/api/run", "full"));
+$("reconBtn").addEventListener("click", () => startJob("/api/reconstruct", "recon"));
+$("stopBtn").addEventListener("click", async () => {
+  $("stopBtn").disabled = true; $("runPhase").textContent = "停止中…";
+  await fetch("/api/run/stop", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ video: sel.value }) });
+  $("stopBtn").disabled = false;   // pollRun will pick up the stopped state
+});
+async function pollRun() {
+  const s = await (await fetch("/api/run/status?video=" + encodeURIComponent(sel.value))).json();
+  const text = (s.log || []).join("\n");
+  const log = $("runLog"); log.textContent = text; log.scrollTop = log.scrollHeight;
+  if (s.running) {
+    const active = stageFromLog(text, runMode);
+    setRunUI("running", "執行中：" + RUN_STAGES[runMode][active]);
+    $("runElapsed").textContent = fmtElapsed();
+    renderStages(active, false, false); runHint(active);
+    runPoll = setTimeout(pollRun, 1500);
+  } else {
+    runPoll = null;
+    const ok = s.returncode === 0, cancelled = s.cancelled;
+    $("runHint").textContent = "";
+    if (cancelled) {
+      setRunUI("err", "已停止");
+      $("runElapsed").textContent = ""; renderStages(stageFromLog(text, runMode), false, true);
+    } else {
+      setRunUI(ok ? "ok" : "err", ok ? "完成！切到 ⑤ 看結果" : "失敗（代碼 " + s.returncode + "），展開詳細記錄查看");
+      $("runElapsed").textContent = ok ? "耗時 " + fmtElapsed().replace("已 ", "") : "";
+      renderStages(RUN_STAGES[runMode].length, ok, !ok);
+    }
+    $("runBtn").disabled = $("reconBtn").disabled = false;
+    if (ok) { document.querySelector('.step[data-step="4"]').classList.add("done"); $("toResult").disabled = false; }
+  }
+}
+$("toResult").addEventListener("click", () => showStep("5"));
+
+/* ---- step 5: results dashboard (metric cards + vehicle legend + map) ---- */
+let routeLayers = [];
+const ROUTE_COLORS = ["#ff4d4d", "#2d9cff", "#28d07a", "#ffb02e", "#c46bff"];
+function clearRoute() { routeLayers.forEach((l) => map.removeLayer(l)); routeLayers = []; }
+function setDl(id, href) {
+  const a = $(id);
+  if (href) { a.href = href; a.style.display = "inline-flex"; } else a.style.display = "none";
+}
+function haversine(a, b) {
+  const R = 6371000, t = Math.PI / 180;
+  const dla = (b[0] - a[0]) * t, dlo = (b[1] - a[1]) * t;
+  const h = Math.sin(dla / 2) ** 2 + Math.cos(a[0] * t) * Math.cos(b[0] * t) * Math.sin(dlo / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+function showResultTab() {
+  const tab = (document.querySelector(".rtab.on") || {}).dataset?.tab || "figure";
+  $("resFigure").style.display = (tab === "figure" && $("resFigure").getAttribute("src")) ? "block" : "none";
+  $("resVideo").style.display = (tab === "video" && $("resVideo").getAttribute("src")) ? "block" : "none";
+}
+document.querySelectorAll(".rtab").forEach((t) => t.addEventListener("click", () => {
+  document.querySelectorAll(".rtab").forEach((x) => x.classList.toggle("on", x === t));
+  if (t.dataset.tab !== "video") $("resVideo").pause?.();
+  showResultTab();
+}));
+
+async function loadResults() {
+  if (!sel.value) return;
+  const vid = encodeURIComponent(sel.value);
+  const s = await (await fetch("/api/run/status?video=" + vid)).json();
+  const results = s.results || [], has = (k) => results.includes(k), bust = "&t=" + Date.now();
+  if (!has("csv")) {                                   // nothing to show yet
+    clearRoute();
+    $("resContent").style.display = "none";
+    $("resEmpty").style.display = "block";
+    $("resEmpty").textContent = s.running ? "④ 執行中，跑完再回來看結果…" : "尚無結果 —— 先到 ④ 執行。";
+    $("resultStatus").textContent = "";
+    return;
+  }
+  $("resEmpty").style.display = "none";
+  $("resContent").style.display = "block";
+
+  // colours + display names from the scene, so cards/map/figure all match
+  const scene = await (await fetch("/api/scene?video=" + vid)).json();
+  const vinfo = {};
+  (scene.vehicles || []).forEach((v) => { vinfo[v.name] = { display: v.display, color: rgbCss(v.bgr) }; });
+
+  // parse the route CSV once into per-vehicle stats
+  const rows = (await (await fetch("/api/result?kind=csv&video=" + vid)).text()).trim().split(/\r?\n/);
+  const head = rows.shift().split(","), ix = (n) => head.indexOf(n);
+  const veh = {}; let impact = null, impactFrame = null, fMin = Infinity, fMax = -Infinity, palette = 0;
+  for (const ln of rows) {
+    const c = ln.split(","), lat = +c[ix("lat")], lon = +c[ix("lon")];
+    if (isNaN(lat) || isNaN(lon)) continue;
+    const name = c[ix("vehicle")], f = +c[ix("frame")], sp = +c[ix("speed_kmh")] || 0;
+    const v = veh[name] || (veh[name] = { pts: [], speeds: [], color: (vinfo[name]?.color) || ROUTE_COLORS[palette++ % ROUTE_COLORS.length], display: vinfo[name]?.display || name });
+    v.pts.push([lat, lon]); v.speeds.push(sp);
+    fMin = Math.min(fMin, f); fMax = Math.max(fMax, f);
+    if (c[ix("is_impact")] === "1") { impact = [lat, lon]; impactFrame = f; }
+  }
+  const vehs = Object.entries(veh);
+
+  // metric cards
+  $("resMetrics").innerHTML = `
+    <div class="mcard"><div class="ml">撞擊影格</div><div class="mv">${impactFrame ?? "—"}</div></div>
+    <div class="mcard"><div class="ml">車輛數</div><div class="mv">${vehs.length}<span class="mu">台</span></div></div>
+    <div class="mcard"><div class="ml">分析影格</div><div class="mv">${isFinite(fMin) ? fMin + "–" + fMax : "—"}</div></div>`;
+
+  // vehicle legend cards
+  $("resVehCards").innerHTML = vehs.map(([name, v]) => {
+    const peak = Math.round(Math.max(...v.speeds, 0));
+    const nz = v.speeds.filter((x) => x > 0);
+    const avg = nz.length ? Math.round(nz.reduce((a, b) => a + b, 0) / nz.length) : 0;
+    let len = 0; for (let i = 1; i < v.pts.length; i++) len += haversine(v.pts[i - 1], v.pts[i]);
+    return `<div class="vcard" style="border-left-color:${v.color}">
+      <div><div class="vname">${v.display}</div><div class="vsub">${name} · ${v.pts.length} 點 · 軌跡 ${len.toFixed(1)} m</div></div>
+      <div class="vstats">最高 <b>${peak}</b> · 平均 <b>${avg}</b> km/h</div></div>`;
+  }).join("");
+
+  // map: matching-colour polylines + start dots + impact
+  clearRoute();
+  const allPts = [];
+  for (const [name, v] of vehs) {
+    allPts.push(...v.pts);
+    routeLayers.push(L.polyline(v.pts, { color: v.color, weight: 4, opacity: 0.92 }).addTo(map).bindPopup(v.display));
+    routeLayers.push(L.circleMarker(v.pts[0], { radius: 5, color: "#fff", weight: 2, fillColor: v.color, fillOpacity: 1 }).addTo(map).bindPopup(v.display + " 起點"));
+  }
+  if (impact) routeLayers.push(L.marker(impact).addTo(map).bindPopup("撞擊點"));
+  if (allPts.length) map.fitBounds(L.latLngBounds(allPts).pad(0.35));
+
+  // media + downloads
+  $("resFigure").src = has("figure") ? "/api/result?kind=figure&video=" + vid + bust : "";
+  $("resVideo").src = has("tracked") ? "/api/result?kind=tracked&video=" + vid + bust : "";
+  showResultTab();
+  setDl("dlKml", has("kml") ? "/api/result?kind=kml&video=" + vid : null);
+  setDl("dlCsv", has("csv") ? "/api/result?kind=csv&video=" + vid : null);
+  $("resultStatus").textContent = "完成";
+  setTimeout(() => map.invalidateSize(), 60);
+}
+
+/* ---- youtube download ---- */
+$("dlBtn").addEventListener("click", async () => {
+  const url = ytUrl.value.trim(), start = ytStart.value.trim(), end = ytEnd.value.trim();
+  if (!url) { $("status").textContent = "請填 YouTube 網址"; return; }
+  dlBtn.disabled = true; $("status").textContent = "下載中…";
+  try {
+    const res = await (await fetch("/api/download", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, start: start === "" ? null : Number(start), end: end === "" ? null : Number(end) }) })).json();
+    $("status").textContent = res.ok ? "完成：" + res.file : "失敗：" + res.error;
+    if (res.ok) loadVideos(res.file);
+  } catch (e) { $("status").textContent = "失敗：" + e; } finally { dlBtn.disabled = false; }
+});
+
+/* ---- confirm the selected clip, then jump to calibration ---- */
+$("confirmVideoBtn").addEventListener("click", async () => {
+  if (!sel.value) { $("selStatus").textContent = "尚無可選影片"; return; }
+  $("selStatus").textContent = "載入中…";
+  await loadScene();
+  $("selStatus").textContent = "已選取：" + sel.value;
+  document.querySelector('.step[data-step="1"]').classList.add("done");
+  showStep("2");
+});
+
+/* ---- right: Google map tiles (roadmap default, like Google Maps) ---- */
+const gSub = { subdomains: ["mt0", "mt1", "mt2", "mt3"], maxZoom: 21, attribution: "© Google" };
+const roadL = L.tileLayer("https://{s}.google.com/vt/lyrs=m&x={x}&y={y}&z={z}", gSub);
+const satL = L.tileLayer("https://{s}.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", gSub);
+const hybridL = L.tileLayer("https://{s}.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", gSub);
+const map = L.map("map", { layers: [roadL] }).setView(CENTER, 18);
+L.control.layers({ "地圖 (Google)": roadL, "衛星 (Google)": satL, "混合 (Google)": hybridL }).addTo(map);
+const readout = $("readout"); let marker;
+function setPoint(lat, lon, fly) {
+  if (marker) marker.setLatLng([lat, lon]); else marker = L.marker([lat, lon]).addTo(map);
+  const t = lat.toFixed(7) + ", " + lon.toFixed(7);
+  readout.textContent = t + "　（點此複製）"; readout.dataset.coords = t;
+  marker.bindPopup(t).openPopup(); lastLatLon = [lat, lon]; updatePair();
+  if (fly) map.setView([lat, lon], Math.max(map.getZoom(), 18));
+}
+/* in step 3, clicking the map sets the selected vehicle's start lat/lon */
+let startMarkers = [];
+function renderStartMarkersOnMap() {
+  startMarkers.forEach((m) => map.removeLayer(m)); startMarkers = [];
+  if (curStep !== "3") return;
+  markObjects.forEach((o) => {
+    if (!o.start_latlon) return;
+    startMarkers.push(
+      L.circleMarker(o.start_latlon, { radius: 7, color: "#fff", weight: 2, fillColor: rgbCss(o.bgr), fillOpacity: 1 })
+        .addTo(map).bindTooltip(displayLabel(o) + " 起點"));
+  });
+}
+function setStartFromMap(lat, lon) {
+  const obj = curObject();
+  if (!obj) { $("vehStatus").textContent = "先選一個車輛，再點地圖設定它的起點"; return; }
+  obj.start_latlon = [+lat.toFixed(7), +lon.toFixed(7)];
+  renderStartInputs(); renderObjBar(); renderStartMarkersOnMap();
+  $("vehStatus").textContent = `已設「${displayLabel(obj)}」起點：${lat.toFixed(6)}, ${lon.toFixed(6)}（存檔後生效）`;
+}
+map.on("click", (e) => {
+  setPoint(e.latlng.lat, e.latlng.lng);
+  if (curStep === "3") setStartFromMap(e.latlng.lat, e.latlng.lng);
+});
+readout.addEventListener("click", () => { if (readout.dataset.coords) navigator.clipboard.writeText(readout.dataset.coords); });
+$("latlon").addEventListener("keydown", (e) => {
+  if (e.key !== "Enter") return;
+  const p = e.target.value.split(/[ ,]+/).map(Number).filter((n) => !isNaN(n));
+  if (p.length >= 2) setPoint(p[0], p[1], true);
+});
+
+loadVideos();
+</script>
+</body>
+</html>

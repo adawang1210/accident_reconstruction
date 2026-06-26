@@ -1,0 +1,104 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = [ "setuptools>=61" ]
+
+[project]
+name = "accident-reconstruction"
+version = "0.1.0"
+description = "從監視器/行車記錄器影片重建車禍車輛的 2D 行車軌跡（KML / CSV / 地圖）"
+readme = "README.md"
+keywords = [
+  "accident-reconstruction",
+  "computer-vision",
+  "homography",
+  "SAM2",
+  "tracking",
+  "trajectory",
+]
+license = "MIT"
+requires-python = ">=3.10"
+classifiers = [
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Topic :: Multimedia :: Video",
+  "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+  "fastapi>=0.110",
+  "jsonargparse[signatures]>=4.27",
+  "numpy>=1.21.2",
+  "opencv-python>=4.5.5.64",
+  "pillow>=9.4",
+  "pydantic>=2",
+  "ultralytics>=8.3",               # 提供 SAM2VideoPredictor
+  "uvicorn>=0.27",
+  "yt-dlp>=2024.1",
+]
+
+[dependency-groups]
+dev = [
+  "pre-commit>=3.8",
+  "pytest>=7.2.2,<9",
+]
+
+[tool.setuptools]
+include-package-data = false
+packages.find.include = [ "accident_reconstruction*" ]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 88
+indent-width = 4
+exclude = [
+  ".git",
+  ".ruff_cache",
+  ".venv",
+  "build",
+  "dist",
+  "node_modules",
+  "venv",
+]
+format.indent-style = "space"
+format.quote-style = "double"
+format.line-ending = "auto"
+format.skip-magic-trailing-comma = false
+lint.select = [
+  "A",   # flake8-builtins
+  "E",   # pycodestyle errors
+  "F",   # Pyflakes
+  "I",   # isort
+  "PT",  # pytest
+  "Q",   # flake8-quotes
+  "RUF", # Ruff-specific rules
+  "S",   # bandit
+  "UP",  # pyupgrade
+  "W",   # pycodestyle warnings
+]
+lint.ignore = []
+lint.per-file-ignores."__init__.py" = [ "E402", "F401" ]
+# 中文 UI / CLI 輸出字串刻意使用全形標點。
+lint.per-file-ignores."accident_reconstruction/*.py" = [ "RUF001", "RUF002", "RUF003" ]
+# 測試使用 assert（pytest 慣例）。
+lint.per-file-ignores."tests/*.py" = [ "S101" ]
+lint.unfixable = []
+lint.dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+lint.flake8-quotes.docstring-quotes = "double"
+lint.flake8-quotes.inline-quotes = "double"
+lint.flake8-quotes.multiline-quotes = "double"
+lint.isort.no-sections = false
+lint.isort.order-by-type = true
+lint.mccabe.max-complexity = 20
+lint.pydocstyle.convention = "google"
+lint.pylint.max-args = 20
+
+[tool.codespell]
+count = true
+quiet-level = 3
+
+[tool.pytest]
+ini_options.addopts = [ "--color=yes" ]
+ini_options.doctest_optionflags = "ELLIPSIS NORMALIZE_WHITESPACE"

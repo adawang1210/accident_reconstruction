@@ -1,0 +1,14 @@
+{
+    "version": "0.0.1",
+    "configurations": [
+        {
+            "name": "web_app",
+            "runtimeExecutable": ".venv/bin/python",
+            "runtimeArgs": [
+                "-m",
+                "examples.tracking.web_app"
+            ],
+            "port": 8000
+        }
+    ]
+}
