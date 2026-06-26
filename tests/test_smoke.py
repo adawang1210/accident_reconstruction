@@ -21,6 +21,24 @@ def test_builtin_scenes_present() -> None:
     assert "keelung_xinwu_yier" in sc.SCENES
 
 
+def test_geo_writer_modules_import() -> None:
+    """Figure/geo writers must import cleanly.
+
+    A wrong-submodule import here does not crash the pipeline: ``run_pipeline``
+    catches it and merely skips the recognised figure, so the breakage is silent.
+    Importing the modules surfaces it (regression: ``recognized_route`` imported
+    ``metric_to_latlon`` from the legacy annotation module instead of
+    ``calibrate_homography``).
+    """
+    from accident_reconstruction import (
+        birdseye_manual_annotation,
+        recognized_route,
+    )
+
+    assert birdseye_manual_annotation is not None
+    assert recognized_route is not None
+
+
 def test_discover_scenes_is_safe_without_data() -> None:
     """``discover_scenes`` must not raise when ``data/`` is missing."""
     from accident_reconstruction import scene_config as sc

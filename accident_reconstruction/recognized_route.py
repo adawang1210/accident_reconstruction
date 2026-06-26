@@ -48,8 +48,8 @@ from accident_reconstruction.birdseye_manual_annotation import (
     _kml_linestring,
     _label,
 )
-from accident_reconstruction.calibrate_homography import latlon_to_local_meters
-from accident_reconstruction.manual_pre_impact_motorcycle_annotation import (
+from accident_reconstruction.calibrate_homography import (
+    latlon_to_local_meters,
     metric_to_latlon,
 )
 from accident_reconstruction.scene_config import SCENE
