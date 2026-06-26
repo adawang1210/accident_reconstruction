@@ -125,11 +125,48 @@ _FALLBACK_RGB = [
 ]
 
 
+def _vehicle_colors() -> dict[str, tuple[int, int, int]]:
+    """Per-vehicle RGB taken from the user-drawn boxes (``vehicle_boxes.json``).
+
+    The web workbench stores each object's colour as ``bgr``. Reusing it here keeps
+    a vehicle's recognised trajectory the SAME colour as its tracking box, and -- as
+    the workbench assigns distinct colours per object -- keeps same-class vehicles
+    (``car`` / ``car2``) visually apart.
+
+    Returns:
+        ``{vehicle_name: (r, g, b)}`` for objects that carry a colour.
+    """
+    path = SCENE.vehicle_boxes
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return {}
+    objects = data.get("objects") if isinstance(data, dict) else None
+    colors: dict[str, tuple[int, int, int]] = {}
+    if isinstance(objects, list):
+        for obj in objects:
+            name, bgr = obj.get("name"), obj.get("bgr")
+            if name and isinstance(bgr, (list, tuple)) and len(bgr) == 3:
+                blue, green, red = bgr
+                colors[name] = (int(red), int(green), int(blue))
+    return colors
+
+
 def _display_for(label: str, index: int) -> dict:
-    """Display name + RGB for a label, from the scene or a fallback palette."""
+    """Display name + RGB for a label.
+
+    Prefers the scene's authored styling, then the user-drawn box colour (so the
+    trajectory matches the tracking box and same-class vehicles stay distinct), and
+    finally a per-index fallback palette.
+    """
     info = VEHICLE_DISPLAY.get(label)
     if info:
         return info
+    color = _vehicle_colors().get(label)
+    if color is not None:
+        return {"name": label, "rgb": color}
     return {"name": label, "rgb": _FALLBACK_RGB[index % len(_FALLBACK_RGB)]}
 
 

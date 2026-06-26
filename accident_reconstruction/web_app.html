@@ -379,9 +379,29 @@ const CLASSES = [
   { key: "person",     label: "人",     bgr: [120, 220, 120] },
   { key: "bicycle",    label: "腳踏車", bgr: [255, 120, 200] },
 ];
+/* Distinct swatches (bgr) so two objects -- especially same-class ones like
+   car / car2 -- never share a colour. The class default is tried first; if it is
+   already taken, the next free swatch is used. */
+const SWATCHES = [
+  [240, 140, 40],   // blue
+  [0, 196, 255],    // amber
+  [80, 200, 80],    // green
+  [200, 60, 220],   // magenta
+  [40, 40, 240],    // red
+  [255, 170, 60],   // sky
+  [120, 220, 120],  // light green
+  [180, 120, 0],    // teal
+];
 let markObjects = [], curObjId = null, objSeq = 0;
 const rgbCss = (bgr) => `rgb(${bgr[2]},${bgr[1]},${bgr[0]})`;
 const curObject = () => markObjects.find((o) => o.id === curObjId) || null;
+/* Pick a colour not already used by any current object, preferring `wanted`. */
+function pickColor(wanted, taken) {
+  const used = new Set((taken || markObjects.map((o) => o.bgr)).map((c) => c.join(",")));
+  if (wanted && !used.has(wanted.join(","))) return wanted.slice();
+  for (const s of SWATCHES) if (!used.has(s.join(","))) return s.slice();
+  return (wanted || [200, 200, 200]).slice();  // ran out: reuse (>8 objects)
+}
 
 /* ---- stepper: map only shows on step 2 (and 5) ---- */
 let curStep = "1";
@@ -543,7 +563,9 @@ function loadObjects(raw) {
   markObjects = []; objSeq = 0; curObjId = null;
   const mk = (cls, name, label, bgr, boxes, startLL) => {
     const id = "o" + (++objSeq);
-    markObjects.push({ id, cls, name, label, bgr, boxes, start_latlon: startLL || null });
+    // Keep the stored colour when free; otherwise reassign so duplicates (e.g. an
+    // older file where car & car2 share a colour) come out distinct.
+    markObjects.push({ id, cls, name, label, bgr: pickColor(bgr), boxes, start_latlon: startLL || null });
     return id;
   };
   if (raw && Array.isArray(raw.objects)) {
@@ -576,7 +598,8 @@ $("addObj").addEventListener("click", () => {
   const same = markObjects.filter((o) => o.cls === key).length;
   const name = same ? key + (same + 1) : key;        // unique downstream name
   const id = "o" + (++objSeq);
-  markObjects.push({ id, cls: key, name, label: def.label, bgr: def.bgr.slice(), boxes: [] });
+  const bgr = pickColor(def.bgr);                    // distinct from existing objects
+  markObjects.push({ id, cls: key, name, label: def.label, bgr, boxes: [] });
   curObjId = id;
   renderObjBar(); renderStartInputs(); renderThumbs();
   $("vehStatus").textContent = `已新增「${def.label}」→ 在影片上拖曳框出它`;
