@@ -198,6 +198,20 @@ class SceneConfig:
         return self.overrides.get("gates") or "strict"
 
     @property
+    def truncate_boxes_at_impact(self) -> bool:
+        """If true, stop drawing/recording every vehicle's box after the impact
+        frame in the prompt-track overlay.
+
+        Use when the striker and the struck vehicle FUSE into one pixel blob at
+        impact (e.g. a motorcycle crushed against the car's front): SAM2 can no
+        longer segment them apart, so the surviving track's box grows to swallow
+        the other vehicle. Truncating at impact stops the box before it absorbs
+        the other -- only the on-approach boxes (and the impact marker) remain.
+        Default false keeps the full post-impact boxes (right for a clean
+        collide-then-separate, e.g. the keelung taxi driving on)."""
+        return bool(self.overrides.get("truncate_boxes_at_impact"))
+
+    @property
     def show_struck_full(self) -> bool:
         """If true, keep the struck vehicle's FULL on-ground path (don't truncate
         it at the impact frame) so its post-impact push -- e.g. shoved into a shop

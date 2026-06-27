@@ -116,6 +116,18 @@ BACKTRACK_TOLERANCE_PX = 40.0
 # (every box now propagates to end_frame, so this keeps that affordable).
 LOST_PATIENCE_FRAMES = 20
 
+# Two vehicles' boxes are treated as MERGED when the smaller box is largely inside
+# the larger one -- a SAM2 mask leak where one track's mask has grown onto the
+# overlapping other vehicle (e.g. the struck motorcycle's mask swallowed by the car
+# it hit, so its box collapses onto the car's). Past this overlap fraction (of the
+# smaller box's area) the smaller box no longer is that vehicle, so it is dropped
+# from the merge frame on -- the two boxes can no longer become one.
+MERGE_CONTAINMENT_RATIO = 0.6
+# Require the overlap to persist this many consecutive shared frames before cutting,
+# so a single-frame brush-past (the striker driving close) is not mistaken for a
+# mask merge.
+MERGE_SUSTAIN_FRAMES = 3
+
 
 def _select_device() -> str:
     """Pick the fastest available torch device for SAM2 (MPS > CUDA > CPU)."""
@@ -337,6 +349,103 @@ def _segment_masks(
     return out
 
 
+def box_containment(
+    box_a: tuple[int, int, int, int], box_b: tuple[int, int, int, int]
+) -> float:
+    """Intersection area as a fraction of the SMALLER box's area (0..1).
+
+    Containment (rather than IoU) detects a merge where a small box sits wholly
+    inside a much larger one: their IoU stays low (the union is dominated by the
+    big box) but the small box is fully swallowed, which is exactly the SAM2 mask
+    leak we want to catch.
+
+    Args:
+        box_a: ``(x1, y1, x2, y2)``.
+        box_b: ``(x1, y1, x2, y2)``.
+
+    Returns:
+        Overlap fraction of whichever box is smaller; 0 if either is degenerate.
+
+    Examples:
+        ```python
+        # small box fully inside the large one -> 1.0
+        box_containment((10, 10, 20, 20), (0, 0, 100, 100))
+        # 1.0
+        # disjoint boxes -> 0.0
+        box_containment((0, 0, 10, 10), (50, 50, 60, 60))
+        # 0.0
+        ```
+    """
+    ix1, iy1 = max(box_a[0], box_b[0]), max(box_a[1], box_b[1])
+    ix2, iy2 = min(box_a[2], box_b[2]), min(box_a[3], box_b[3])
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    area_a = max(0, box_a[2] - box_a[0]) * max(0, box_a[3] - box_a[1])
+    area_b = max(0, box_b[2] - box_b[0]) * max(0, box_b[3] - box_b[1])
+    smaller = min(area_a, area_b)
+    return inter / smaller if smaller > 0 else 0.0
+
+
+def merge_suppression_cuts(
+    per_vehicle: dict[str, dict[int, tuple]],
+) -> dict[str, int]:
+    """Frame from which each vehicle's box has merged into another's (drop after).
+
+    Each vehicle is tracked by an independent SAM2 run, so when two of them overlap
+    at impact one track's mask can leak onto the other -- the smaller (struck)
+    vehicle's box grows to cover the larger one, and the two drawn boxes collapse
+    into one. This finds, per pair, the first run of :data:`MERGE_SUSTAIN_FRAMES`
+    consecutive shared frames where the smaller box is at least
+    :data:`MERGE_CONTAINMENT_RATIO` inside the larger one, and marks the SMALLER
+    vehicle to be cut from the run's first frame (its box is no longer that
+    vehicle). The trajectory's own flip/impact truncation is separate; this guards
+    the drawn boxes and the tracks CSV.
+
+    Args:
+        per_vehicle: ``{vehicle: {frame: (box, anchor, mask)}}``.
+
+    Returns:
+        ``{vehicle: cut_frame}`` -- only for vehicles that merge; absent otherwise.
+
+    Examples:
+        ```python
+        # small box swallowed by the big one from frame 2 on (sustain=3) -> cut@2
+        small = {f: ((10, 10, 20, 20), (15, 20), None) for f in range(2, 6)}
+        big = {f: ((0, 0, 100, 100), (50, 100), None) for f in range(0, 6)}
+        merge_suppression_cuts({"motorcycle": small, "car": big})
+        # {'motorcycle': 2}
+        ```
+    """
+    cuts: dict[str, int] = {}
+    names = list(per_vehicle)
+    for index, label_a in enumerate(names):
+        for label_b in names[index + 1 :]:
+            shared = sorted(set(per_vehicle[label_a]) & set(per_vehicle[label_b]))
+            run = 0
+            run_start: int | None = None
+            smaller: str | None = None
+            for frame in shared:
+                box_a = per_vehicle[label_a][frame][0]
+                box_b = per_vehicle[label_b][frame][0]
+                if box_containment(box_a, box_b) >= MERGE_CONTAINMENT_RATIO:
+                    if run == 0:
+                        run_start = frame
+                        area_a = (box_a[2] - box_a[0]) * (box_a[3] - box_a[1])
+                        area_b = (box_b[2] - box_b[0]) * (box_b[3] - box_b[1])
+                        smaller = label_a if area_a <= area_b else label_b
+                    run += 1
+                    if run >= MERGE_SUSTAIN_FRAMES and smaller is not None:
+                        prior = cuts.get(smaller)
+                        cuts[smaller] = (
+                            run_start if prior is None else min(prior, run_start)
+                        )
+                        break
+                else:
+                    run = 0
+                    run_start = None
+                    smaller = None
+    return cuts
+
+
 def track_vehicle(
     name: str,
     spec: dict,
@@ -511,6 +620,46 @@ def main(
         )
         for name in names
     }
+
+    # Suppress SAM2 mask merges: once a vehicle's box has leaked onto / collapsed
+    # into another's (e.g. the struck motorcycle swallowed by the car it hit), drop
+    # it from that frame on so the two boxes never render as one. This is purely a
+    # box/CSV guard -- the trajectory's flip/impact truncation is handled in
+    # ``auto_reconstruct`` and is independent of this.
+    for cut_name, cut_frame in merge_suppression_cuts(per_vehicle).items():
+        per_vehicle[cut_name] = {
+            frame: record
+            for frame, record in per_vehicle[cut_name].items()
+            if frame < cut_frame
+        }
+
+    # Truncate every vehicle's box at the impact frame when the scene opts in
+    # (``truncate_boxes_at_impact``). After a fusing collision -- the struck
+    # vehicle crushed against the striker -- SAM2 cannot separate the two, so the
+    # surviving track's box grows to swallow the other. Dropping every box after
+    # impact stops that (only the on-approach boxes and the impact marker remain).
+    # The impact frame is detected the same way as ``auto_reconstruct`` (deferred
+    # import: it pulls the geo writers, unneeded for a plain track run otherwise).
+    if SCENE.truncate_boxes_at_impact:
+        from accident_reconstruction.auto_reconstruct import (
+            detect_impact,
+            project_metric,
+        )
+
+        anchors = {
+            name: {frame: record[1] for frame, record in records.items()}
+            for name, records in per_vehicle.items()
+        }
+        impact_frame = SCENE.impact_frame_override
+        if impact_frame is None:
+            impact_frame = detect_impact(project_metric(anchors))
+        if impact_frame is not None:
+            for name, records in per_vehicle.items():
+                per_vehicle[name] = {
+                    frame: record
+                    for frame, record in records.items()
+                    if frame <= impact_frame
+                }
 
     # The struck vehicle's trace line is stopped at its flip onset so the drawn
     # route does not loop through the post-impact tumble (where the ground anchor
