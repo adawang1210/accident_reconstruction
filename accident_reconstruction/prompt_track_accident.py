@@ -465,6 +465,73 @@ def merge_suppression_cuts(
     return cuts
 
 
+def split_overlapping_masks(
+    per_vehicle: dict[str, dict[int, tuple]],
+) -> dict[str, dict[int, tuple]]:
+    """Split a fused blob: clip the larger vehicle's mask out of the smaller's box.
+
+    After a fusing collision the two vehicles share one connected blob, so the
+    larger vehicle's track segments the whole thing and its box/mask swallow the
+    smaller one (even when the smaller is separately tracked). Per frame, for each
+    overlapping pair, the smaller vehicle's box region is erased from the LARGER
+    vehicle's mask and its box/anchor recomputed -- so the larger box/mask stops at
+    the smaller vehicle instead of covering it. The smaller vehicle (typically a
+    manual post-impact re-seed) keeps its own box. A no-op where boxes don't
+    overlap, so it is safe to run over every frame.
+
+    Args:
+        per_vehicle: ``{vehicle: {frame: (box, anchor, mask)}}`` (masks required).
+
+    Returns:
+        The same dict, with larger boxes/masks trimmed where they swallowed a
+        smaller vehicle (mutated in place and returned).
+    """
+    names = list(per_vehicle)
+    all_frames: set[int] = set()
+    for records in per_vehicle.values():
+        all_frames |= set(records)
+    for frame in sorted(all_frames):
+        present = [name for name in names if frame in per_vehicle[name]]
+        if len(present) < 2:
+            continue
+        # Smallest first, so each larger vehicle is clipped by every smaller one.
+        present.sort(
+            key=lambda name: (lambda b: (b[2] - b[0]) * (b[3] - b[1]))(
+                per_vehicle[name][frame][0]
+            )
+        )
+        for rank, small in enumerate(present):
+            sbox = per_vehicle[small][frame][0]
+            for large in present[rank + 1 :]:
+                lbox, _, lmask = per_vehicle[large][frame]
+                if lmask is None or box_containment(sbox, lbox) <= 0.0:
+                    continue
+                clipped = lmask.copy()
+                h, w = clipped.shape
+                # Cut a full strip off the larger mask on the side the smaller
+                # vehicle sits (the axis where their centres are most separated),
+                # so the larger body keeps only its own side of the seam. A strip
+                # (not just the smaller box) is needed because the fused blob stays
+                # connected around the box otherwise.
+                s_cx, s_cy = (sbox[0] + sbox[2]) / 2, (sbox[1] + sbox[3]) / 2
+                l_cx, l_cy = (lbox[0] + lbox[2]) / 2, (lbox[1] + lbox[3]) / 2
+                if abs(l_cx - s_cx) >= abs(l_cy - s_cy):
+                    if s_cx < l_cx:  # smaller on the left -> drop columns up to it
+                        clipped[:, : min(sbox[2] + 1, w)] = False
+                    else:  # smaller on the right
+                        clipped[:, max(sbox[0], 0) :] = False
+                elif s_cy < l_cy:  # smaller above
+                    clipped[: min(sbox[3] + 1, h), :] = False
+                else:  # smaller below
+                    clipped[max(sbox[1], 0) :, :] = False
+                found = mask_box_and_anchor(clipped)
+                if found is None:  # strip emptied it -- keep the original
+                    continue
+                nbox, nanchor = found
+                per_vehicle[large][frame] = (nbox, nanchor, clipped)
+    return per_vehicle
+
+
 def track_vehicle(
     name: str,
     spec: dict,
@@ -585,18 +652,25 @@ def track_vehicle(
         # so this drops a SAM2 re-seed that snapped to the original prompt location
         # after the collision. Disabled in loose/off for struck/reversing vehicles
         # (a struck/flung motorcycle the truck shoves back past its start needs
-        # "loose" gates -- see SCENE.gate_mode).
-        if backtrack_gate_on and start_anchor is not None:
-            distance = float(
-                np.hypot(anchor[0] - start_anchor[0], anchor[1] - start_anchor[1])
-            )
-            if distance < max_dist - BACKTRACK_TOLERANCE_PX:
-                continue
+        # "loose" gates -- see SCENE.gate_mode). A user-anchored frame bypasses it
+        # (the user vouches for this position) AND redefines the furthest-distance
+        # reference, so the propagated frames of a manual post-impact re-seed --
+        # legitimately closer to the start than the run-up's furthest point, e.g. a
+        # motorcycle crushed back against the car it hit -- survive instead of being
+        # dropped as a "teleport back to start".
         if start_anchor is None:
             start_anchor = anchor
         else:
-            dx, dy = anchor[0] - start_anchor[0], anchor[1] - start_anchor[1]
-            max_dist = max(max_dist, float(np.hypot(dx, dy)))
+            distance = float(
+                np.hypot(anchor[0] - start_anchor[0], anchor[1] - start_anchor[1])
+            )
+            if (
+                backtrack_gate_on
+                and not is_anchor
+                and distance < max_dist - BACKTRACK_TOLERANCE_PX
+            ):
+                continue
+            max_dist = distance if is_anchor else max(max_dist, distance)
         prev_size = (width, height)
         if not occluded:  # only un-occluded frames update the full-body height
             ref_height = float(height)
@@ -658,6 +732,13 @@ def main(
             for frame, record in per_vehicle[cut_name].items()
             if frame < cut_frame
         }
+
+    # Split any fused blob: where two vehicles overlap (a struck vehicle crushed
+    # against the striker, each separately tracked), clip the larger vehicle's
+    # mask/box out of the smaller's box so the larger one stops at, rather than
+    # swallows, the smaller. Lets a manual post-impact re-seed render as its own box
+    # beside the striker instead of inside it.
+    split_overlapping_masks(per_vehicle)
 
     # Truncate every vehicle's box at the impact frame when the scene opts in
     # (``truncate_boxes_at_impact``). After a fusing collision -- the struck

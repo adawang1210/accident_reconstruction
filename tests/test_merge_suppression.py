@@ -9,6 +9,7 @@ merge frame on. These tests pin that behaviour without running SAM2.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 # The tracker module imports ultralytics at import time; skip where it is absent
@@ -19,6 +20,7 @@ from accident_reconstruction.prompt_track_accident import (
     MERGE_SUSTAIN_FRAMES,
     box_containment,
     merge_suppression_cuts,
+    split_overlapping_masks,
 )
 
 
@@ -83,6 +85,48 @@ def test_no_merge_when_boxes_stay_apart() -> None:
     motorcycle = {f: _record((200, 200, 250, 260)) for f in range(0, 10)}
 
     assert merge_suppression_cuts({"motorcycle": motorcycle, "car": car}) == {}
+
+
+def test_split_overlapping_masks_clips_larger_off_smaller() -> None:
+    """The larger vehicle's box/mask is trimmed to stop at the smaller's box."""
+    h, w = 30, 80
+    # Car: one blob spanning x=10..70 (the fused car+motorcycle).
+    car_mask = np.zeros((h, w), dtype=bool)
+    car_mask[6:24, 10:70] = True
+    # Motorcycle: a small box at the blob's left end (x=12..28).
+    moto_mask = np.zeros((h, w), dtype=bool)
+    moto_mask[8:22, 12:28] = True
+    per = {
+        "car": {0: ((10, 6, 69, 23), (39, 23), car_mask)},
+        "motorcycle": {0: ((12, 8, 28, 21), (20, 21), moto_mask)},
+    }
+
+    split_overlapping_masks(per)
+
+    car_box = per["car"][0][0]
+    moto_box = per["motorcycle"][0][0]
+    # Car box now starts to the right of the motorcycle box (no longer swallows it).
+    assert car_box[0] > moto_box[2]
+    # Motorcycle box is untouched.
+    assert moto_box == (12, 8, 28, 21)
+
+
+def test_split_overlapping_masks_noop_when_apart() -> None:
+    """Non-overlapping vehicles are left unchanged."""
+    h, w = 30, 80
+    car_mask = np.zeros((h, w), dtype=bool)
+    car_mask[6:24, 40:70] = True
+    moto_mask = np.zeros((h, w), dtype=bool)
+    moto_mask[8:22, 2:18] = True
+    per = {
+        "car": {0: ((40, 6, 69, 23), (54, 23), car_mask)},
+        "motorcycle": {0: ((2, 8, 18, 21), (10, 21), moto_mask)},
+    }
+
+    split_overlapping_masks(per)
+
+    assert per["car"][0][0] == (40, 6, 69, 23)
+    assert per["motorcycle"][0][0] == (2, 8, 18, 21)
 
 
 def test_brief_overlap_below_sustain_is_ignored() -> None:
