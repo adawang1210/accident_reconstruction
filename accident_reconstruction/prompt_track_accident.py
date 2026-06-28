@@ -298,8 +298,24 @@ def anchor_boxes(spec: dict, start_frame: int) -> list[tuple[int, list[int]]]:
     return anchors
 
 
+def _build_predictor(weights: str) -> SAM2VideoPredictor:
+    """A fresh SAM2 video predictor on the best available device."""
+    return SAM2VideoPredictor(
+        overrides=dict(
+            conf=0.25,
+            task="segment",
+            mode="predict",
+            imgsz=1024,
+            model=weights,
+            save=False,
+            verbose=False,
+            device=_select_device(),
+        )
+    )
+
+
 def _segment_masks(
-    predictor: SAM2VideoPredictor,
+    weights: str,
     source_video_path: str,
     seg_start: int,
     seg_end: int,
@@ -308,12 +324,14 @@ def _segment_masks(
     """Track one re-seeded segment ``[seg_start, seg_end]`` from ``box``.
 
     Each segment is an independent SAM2 video-memory run prompted by the user's
-    box on its first frame (a clean re-acquire after occlusion). Reusing one
-    predictor is safe: ultralytics resets ``inference_state`` on every call via
-    its ``on_predict_start`` callback.
+    box on its first frame (a clean re-acquire after occlusion). A FRESH predictor
+    is built per segment: reusing one leaks video memory across re-seeds in this
+    ultralytics build (``on_predict_start`` does not fully reset the memory bank),
+    so a later re-seed -- e.g. a manual post-impact box -- would be dragged back to
+    an earlier segment's mask location instead of honouring its own prompt box.
 
     Args:
-        predictor: A reusable SAM2 video predictor.
+        weights: SAM2 weights (a new predictor is created from them per call).
         source_video_path: Input video.
         seg_start: First frame of the segment (the re-seed/prompt frame).
         seg_end: Last frame of the segment (inclusive).
@@ -322,6 +340,7 @@ def _segment_masks(
     Returns:
         ``{frame_index: (box, anchor, mask)}`` raw (no gates applied yet).
     """
+    predictor = _build_predictor(weights)
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as handle:
         clip_path = handle.name
     trim_clip(source_video_path, seg_start, seg_end, clip_path)
@@ -576,19 +595,6 @@ def track_vehicle(
     anchors = anchor_boxes(spec, start_frame)
     anchor_frames = {frame for frame, _ in anchors}
 
-    predictor = SAM2VideoPredictor(
-        overrides=dict(
-            conf=0.25,
-            task="segment",
-            mode="predict",
-            imgsz=1024,
-            model=weights,
-            save=False,
-            verbose=False,
-            device=_select_device(),
-        )
-    )
-
     # Re-seed one segment per user box, each propagated to end_frame. Because the
     # boxes are ascending and ``raw.update`` only writes frames a segment actually
     # has, the MOST RECENT re-seed that still holds the object wins per frame, while
@@ -607,7 +613,7 @@ def track_vehicle(
         if index > 0 and anchor_frame in raw and _box_near(raw[anchor_frame][0], box):
             continue
         raw.update(
-            _segment_masks(predictor, source_video_path, anchor_frame, end_frame, box)
+            _segment_masks(weights, source_video_path, anchor_frame, end_frame, box)
         )
 
     # Gate pass over the merged frames. The strictness is scene/UI-configurable
