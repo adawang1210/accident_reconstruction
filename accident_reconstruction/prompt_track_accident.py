@@ -315,7 +315,7 @@ def _build_predictor(weights: str) -> SAM2VideoPredictor:
 
 
 def _segment_masks(
-    weights: str,
+    predictor: SAM2VideoPredictor,
     source_video_path: str,
     seg_start: int,
     seg_end: int,
@@ -324,14 +324,15 @@ def _segment_masks(
     """Track one re-seeded segment ``[seg_start, seg_end]`` from ``box``.
 
     Each segment is an independent SAM2 video-memory run prompted by the user's
-    box on its first frame (a clean re-acquire after occlusion). A FRESH predictor
-    is built per segment: reusing one leaks video memory across re-seeds in this
-    ultralytics build (``on_predict_start`` does not fully reset the memory bank),
-    so a later re-seed -- e.g. a manual post-impact box -- would be dragged back to
-    an earlier segment's mask location instead of honouring its own prompt box.
+    box on its first frame (a clean re-acquire after occlusion). The predictor is
+    REUSED across a vehicle's segments (the model loads once) but its per-video
+    state is reset here first: in this ultralytics build ``on_predict_start`` does
+    not fully clear the memory bank / stored prompts between calls, so without this
+    a later re-seed -- e.g. a manual post-impact box -- is dragged back to an
+    earlier segment's mask instead of honouring its own prompt box.
 
     Args:
-        weights: SAM2 weights (a new predictor is created from them per call).
+        predictor: A reusable SAM2 video predictor (reset per call here).
         source_video_path: Input video.
         seg_start: First frame of the segment (the re-seed/prompt frame).
         seg_end: Last frame of the segment (inclusive).
@@ -340,7 +341,8 @@ def _segment_masks(
     Returns:
         ``{frame_index: (box, anchor, mask)}`` raw (no gates applied yet).
     """
-    predictor = _build_predictor(weights)
+    predictor.inference_state = {}  # drop the previous segment's video memory
+    predictor.prompts = {}  # and its stored prompts (else they override this box)
     with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as handle:
         clip_path = handle.name
     trim_clip(source_video_path, seg_start, seg_end, clip_path)
@@ -594,26 +596,32 @@ def track_vehicle(
     """
     anchors = anchor_boxes(spec, start_frame)
     anchor_frames = {frame for frame, _ in anchors}
+    usable = [(frame, box) for frame, box in anchors if frame <= end_frame]
 
-    # Re-seed one segment per user box, each propagated to end_frame. Because the
-    # boxes are ascending and ``raw.update`` only writes frames a segment actually
-    # has, the MOST RECENT re-seed that still holds the object wins per frame, while
-    # an earlier box's longer continuous track fills frames a later (fresh, memory-
-    # less) re-seed lost. So extra boxes can only improve coverage, never shorten it
-    # -- the single first-box track stays the backbone.
+    # One predictor for the whole vehicle (the model loads once); _segment_masks
+    # resets its per-video memory per call. Re-seed one segment per user box. Each
+    # only needs to cover until the NEXT re-seed takes over -- the most recent
+    # re-seed wins per frame -- so a segment runs to the next anchor plus a short
+    # ``LOST_PATIENCE_FRAMES`` margin (the last runs to end_frame). The margin
+    # overlaps the next re-seed so that if it is immediately lost, this segment
+    # still fills the gap; ``raw.update`` in ascending order lets the later re-seed
+    # overwrite the overlap where it holds. This caps the SAM2 propagation -- else
+    # every segment runs to end_frame, re-inferring the same long tail many times.
+    predictor = _build_predictor(weights)
     raw: dict[int, tuple] = {}
-    for index, (anchor_frame, box) in enumerate(anchors):
-        if anchor_frame > end_frame:
-            continue
+    for index, (anchor_frame, box) in enumerate(usable):
         # Skip a redundant box: if an earlier segment already tracks this frame with
         # a box near the user's, re-seeding here just repeats work. Re-seed only when
-        # the frame is uncovered or the track diverged (a real correction). This
-        # keeps the first-box backbone as one continuous track (fast) and only pays
-        # for extra SAM2 runs where a correction is actually needed.
+        # the frame is uncovered or the track diverged (a real correction).
         if index > 0 and anchor_frame in raw and _box_near(raw[anchor_frame][0], box):
             continue
+        if index + 1 < len(usable):
+            seg_end = min(usable[index + 1][0] + LOST_PATIENCE_FRAMES, end_frame)
+        else:
+            seg_end = end_frame
+        seg_end = max(seg_end, anchor_frame)
         raw.update(
-            _segment_masks(weights, source_video_path, anchor_frame, end_frame, box)
+            _segment_masks(predictor, source_video_path, anchor_frame, seg_end, box)
         )
 
     # Gate pass over the merged frames. The strictness is scene/UI-configurable
