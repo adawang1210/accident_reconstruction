@@ -664,7 +664,14 @@ def save_overrides(request: OverridesRequest) -> dict:
     if scene is None:
         return {"ok": False, "error": "此影片沒有對應的場景設定（scene_config）"}
     cleaned = {k: v for k, v in request.overrides.items() if v not in (None, "")}
-    for key in ("true_impact_latlon", "true_vehicle_starts"):
+    # Keys not exposed in this step-4 form are preserved so a save here does not
+    # wipe them: the step-2 geo anchors, and CLI-set tracking toggles like
+    # ``truncate_boxes_at_impact`` (the box-merge guard for fusing collisions).
+    for key in (
+        "true_impact_latlon",
+        "true_vehicle_starts",
+        "truncate_boxes_at_impact",
+    ):
         if key not in cleaned and scene.overrides.get(key):
             cleaned[key] = scene.overrides[key]
     scene.overrides_path.parent.mkdir(parents=True, exist_ok=True)
