@@ -54,6 +54,29 @@ def test_merge_cuts_smaller_vehicle_at_run_start() -> None:
     assert cuts == {"motorcycle": 5}
 
 
+def test_manual_reseed_keeps_overlapping_box() -> None:
+    """A user re-seed inside the merge window keeps the box (no cut).
+
+    Post-impact the user re-marks the motorcycle while it is crushed against the
+    car, so its box legitimately overlaps the car's -- the manual anchor must
+    override the merge gate that would otherwise drop it.
+    """
+    car = {f: _record((0, 0, 100, 100)) for f in range(0, 10)}
+    motorcycle = {f: _record((10, 10, 30, 30)) for f in range(0, 10)}
+
+    # Without an anchor the swallowed motorcycle is cut at frame 0.
+    assert merge_suppression_cuts({"motorcycle": motorcycle, "car": car}) == {
+        "motorcycle": 0
+    }
+    # A user box at frame 5 (inside the run) keeps it.
+    assert (
+        merge_suppression_cuts(
+            {"motorcycle": motorcycle, "car": car}, {"motorcycle": {5}}
+        )
+        == {}
+    )
+
+
 def test_no_merge_when_boxes_stay_apart() -> None:
     """Vehicles that never overlap are never cut."""
     car = {f: _record((0, 0, 100, 100)) for f in range(0, 10)}

@@ -387,6 +387,7 @@ def box_containment(
 
 def merge_suppression_cuts(
     per_vehicle: dict[str, dict[int, tuple]],
+    anchor_frames: dict[str, set[int]] | None = None,
 ) -> dict[str, int]:
     """Frame from which each vehicle's box has merged into another's (drop after).
 
@@ -400,8 +401,17 @@ def merge_suppression_cuts(
     vehicle). The trajectory's own flip/impact truncation is separate; this guards
     the drawn boxes and the tracks CSV.
 
+    A vehicle the user has manually re-seeded inside the merge window is NOT cut:
+    a user box at frame >= the run start asserts the vehicle really is there (e.g.
+    a motorcycle re-marked post-impact while crushed against the car it hit, which
+    legitimately overlaps the car's box). Auto leaks have no such anchor, so they
+    are still dropped.
+
     Args:
         per_vehicle: ``{vehicle: {frame: (box, anchor, mask)}}``.
+        anchor_frames: ``{vehicle: {frame, ...}}`` user-drawn (re-seed) frames per
+            vehicle; a cut is skipped when the smaller vehicle is anchored at or
+            after the merge run's start. Defaults to none (no manual boxes).
 
     Returns:
         ``{vehicle: cut_frame}`` -- only for vehicles that merge; absent otherwise.
@@ -413,8 +423,13 @@ def merge_suppression_cuts(
         big = {f: ((0, 0, 100, 100), (50, 100), None) for f in range(0, 6)}
         merge_suppression_cuts({"motorcycle": small, "car": big})
         # {'motorcycle': 2}
+        # a user re-seed at frame 3 keeps the motorcycle (no cut)
+        merge_suppression_cuts({"motorcycle": small, "car": big},
+                               {"motorcycle": {3}})
+        # {}
         ```
     """
+    anchor_frames = anchor_frames or {}
     cuts: dict[str, int] = {}
     names = list(per_vehicle)
     for index, label_a in enumerate(names):
@@ -434,6 +449,10 @@ def merge_suppression_cuts(
                         smaller = label_a if area_a <= area_b else label_b
                     run += 1
                     if run >= MERGE_SUSTAIN_FRAMES and smaller is not None:
+                        # A manual re-seed inside/after the run means the user keeps
+                        # this vehicle here on purpose -- never cut it.
+                        if any(f >= run_start for f in anchor_frames.get(smaller, ())):
+                            break
                         prior = cuts.get(smaller)
                         cuts[smaller] = (
                             run_start if prior is None else min(prior, run_start)
@@ -625,8 +644,15 @@ def main(
     # into another's (e.g. the struck motorcycle swallowed by the car it hit), drop
     # it from that frame on so the two boxes never render as one. This is purely a
     # box/CSV guard -- the trajectory's flip/impact truncation is handled in
-    # ``auto_reconstruct`` and is independent of this.
-    for cut_name, cut_frame in merge_suppression_cuts(per_vehicle).items():
+    # ``auto_reconstruct`` and is independent of this. A vehicle the user manually
+    # re-seeds inside the merge window is kept (a deliberate post-impact box).
+    anchor_frames = {
+        name: {frame for frame, _ in anchor_boxes(INIT_VEHICLES[name], start_frame)}
+        for name in names
+    }
+    for cut_name, cut_frame in merge_suppression_cuts(
+        per_vehicle, anchor_frames
+    ).items():
         per_vehicle[cut_name] = {
             frame: record
             for frame, record in per_vehicle[cut_name].items()
