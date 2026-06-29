@@ -4,8 +4,9 @@
 （見 [`docs/frontend_api.md`](../docs/frontend_api.md)），在 3D 場景中依**分析出的軌跡與
 速度**回放車輛、畫道路中心線、標示撞擊點，並可拉時間軸。
 
-技術選型與調研依據見 [`RESEARCH.md`](./RESEARCH.md)。本資料夾是 **Phase 0**：R3F 外殼 +
-資料驅動回放 + 占位地面，**尚未接 Google 3D Tiles**（座標與結構已預留）。
+技術選型與調研依據見 [`RESEARCH.md`](./RESEARCH.md)。已含 R3F 外殼 + 資料驅動回放、
+glTF 車輛匯入、HDRI/ACES 打光，以及 **Google Photorealistic 3D Tiles** 整合（需 API key
+才看得到實景，見下方）。
 
 ## 執行
 
@@ -64,9 +65,30 @@ src/
 這樣才能忠實反映 `speed_kmh` 的加減速。所有車共用一個 `currentTime`，自動同步。
 車頭朝向取相鄰點切線，用四元數 `slerp` 平滑。
 
+## 真實環境：Google Photorealistic 3D Tiles（看到那條真實路口）
+
+周遭環境的「實景逼真」靠 Google 3D Tiles——**只需 GPS（`origin_latlon`）、不用實地拍攝**。
+需要你自己的 **Google Maps Platform API key**：
+
+1. Google Cloud Console 建專案、**啟用 Map Tiles API**、綁定計費帳號、建立 API key
+    （Photorealistic 3D Tiles 屬 Enterprise SKU，有每月免費額度，超過計費）。
+2. 在 `frontend/.env` 設 `VITE_GOOGLE_TILES_KEY=你的key`，重新 `npm run dev`。
+3. 有 key 且 JSON 有 `origin_latlon` 時，`ReorientationPlugin` 會把實景對到本地原點
+    （up=+Y、east=+x、north=-z），道路/車輛/撞擊點直接落在真實地面上；沒有 key 則用占位地面。
+
+> 程式已寫好（`src/scene/GoogleTiles.tsx`），但**真實實景畫面需要你的 key 才能看到/驗證**。
+
+## 匯入車輛模型
+
+預設是程序化占位車。要換成現成模型（「匯入別人做好的」）：把 `.glb`/`.gltf` 放到
+`public/models/`，在 `.env` 設 `VITE_CAR_MODEL_URL=/models/car.glb`。
+（目前所有車共用同一個模型；之後可依車種 `car`/`motorbike` 分別指定。）
+
 ## 後續階段（見 RESEARCH.md）
 
-- **Phase 1**：HDRI 環境光、車輛換 glTF、後處理（Bloom/GTAO）、濕滑路面反射。
-- **Phase 2**：接 Google Photorealistic 3D Tiles（`3d-tiles-renderer/r3f`），
-    把整個場景群組對位到 `origin_latlon` 的 ENU frame。
-- **Phase 3（選配）**：重點路口補 Gaussian Splatting（`@sparkjsdev/spark`）。
+- **Phase 1（已做）**：HDRI 環境光、ACES tone mapping、即時陰影、`ContactShadows`、
+    車輛改 glTF 匯入 + 程序化備援。
+- **Phase 2（已寫好程式，待 key 驗證）**：Google Photorealistic 3D Tiles，
+    以 `ReorientationPlugin` 對位到 `origin_latlon`。
+- **Phase 3（選配）**：重點路口補 Gaussian Splatting（`@sparkjsdev/spark`）；後處理
+    （Bloom 車燈 / GTAO）與濕滑路面反射（`MeshReflectorMaterial`）。

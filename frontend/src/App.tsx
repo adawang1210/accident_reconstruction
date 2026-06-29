@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { Canvas } from "@react-three/fiber";
+import * as THREE from "three";
 import { Scene } from "./scene/Scene";
 import { Timeline } from "./ui/Timeline";
 import { useReconstruction } from "./data/useReconstruction";
@@ -56,7 +57,17 @@ export function App() {
           </div>
         )}
       </div>
-      <Canvas shadows camera={{ position: [40, 45, 60], fov: 50, near: 0.1, far: 2000 }}>
+      <Canvas
+        shadows
+        dpr={[1, 2]}
+        camera={{ position: [40, 45, 60], fov: 50, near: 0.5, far: 5_000_000 }}
+        gl={{
+          antialias: true,
+          logarithmicDepthBuffer: true,
+          toneMapping: THREE.ACESFilmicToneMapping,
+          toneMappingExposure: 1.0,
+        }}
+      >
         <Scene data={data} />
       </Canvas>
       <Timeline />

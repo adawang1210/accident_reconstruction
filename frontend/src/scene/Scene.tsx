@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, ContactShadows } from "@react-three/drei";
+import { OrbitControls, ContactShadows, Environment } from "@react-three/drei";
 import * as THREE from "three";
 import type { Reconstruction } from "../types";
 import { usePlayback } from "../playback/store";
@@ -8,6 +8,7 @@ import { Ground } from "./Ground";
 import { Roads } from "./Roads";
 import { Vehicle } from "./Vehicle";
 import { ImpactMarker } from "./ImpactMarker";
+import { GoogleTiles, GOOGLE_TILES_KEY } from "./GoogleTiles";
 
 // Drives the shared playback clock once per rendered frame.
 function PlaybackDriver() {
@@ -44,10 +45,21 @@ export function Scene({ data }: { data: Reconstruction }) {
     camera.updateProjectionMatrix();
   }, [camera, center]);
 
+  // Real photoreal environment (Google 3D Tiles) when a key + GPS are present;
+  // otherwise the placeholder ground.
+  const useTiles = Boolean(GOOGLE_TILES_KEY && data.origin_latlon);
+
   return (
     <>
-      <color attach="background" args={["#15171c"]} />
-      <fog attach="fog" args={["#15171c", 120, 320]} />
+      {!useTiles && (
+        <>
+          <color attach="background" args={["#15171c"]} />
+          <fog attach="fog" args={["#15171c", 120, 320]} />
+        </>
+      )}
+
+      {/* HDRI image-based lighting for realistic car paint/reflections. */}
+      <Environment preset="city" />
 
       <hemisphereLight args={["#cdd6ff", "#2a2118", 0.6]} />
       <ambientLight intensity={0.25} />
@@ -65,8 +77,15 @@ export function Scene({ data }: { data: Reconstruction }) {
 
       <PlaybackDriver />
 
+      {useTiles && data.origin_latlon && (
+        <GoogleTiles
+          lat={data.origin_latlon[0]}
+          lon={data.origin_latlon[1]}
+        />
+      )}
+
       <group>
-        <Ground />
+        {!useTiles && <Ground />}
         <Roads roads={data.roads} />
         {Object.entries(data.vehicles).map(([id, v]) => (
           <Vehicle key={id} data={v} />

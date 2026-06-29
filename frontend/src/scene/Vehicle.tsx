@@ -4,6 +4,7 @@ import * as THREE from "three";
 import type { VehicleData } from "../types";
 import { usePlayback } from "../playback/store";
 import { sampleTrack, trackStart } from "./sampleTrack";
+import { CarModel } from "./CarModel";
 
 const UP = new THREE.Vector3(0, 1, 0);
 const HEADING_LOOKAHEAD_SEC = 0.15;
@@ -43,26 +44,7 @@ export function Vehicle({ data }: { data: VehicleData }) {
 
   return (
     <group ref={group}>
-      <mesh castShadow position={[0, 0.65, 0]}>
-        <boxGeometry args={[1.8, 1.3, 4.3]} />
-        <meshPhysicalMaterial
-          color={color}
-          metalness={0.6}
-          roughness={0.35}
-          clearcoat={1}
-          clearcoatRoughness={0.15}
-        />
-      </mesh>
-      {/* cabin */}
-      <mesh castShadow position={[0, 1.45, -0.2]}>
-        <boxGeometry args={[1.6, 0.8, 2.2]} />
-        <meshStandardMaterial color={color} metalness={0.3} roughness={0.5} />
-      </mesh>
-      {/* heading arrow (forward = +Z) */}
-      <mesh position={[0, 0.65, 2.7]} rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.35, 0.8, 12]} />
-        <meshBasicMaterial color={color} />
-      </mesh>
+      <CarModel color={color} />
     </group>
   );
 }
