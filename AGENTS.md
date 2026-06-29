@@ -54,6 +54,21 @@ docs/                                # 文件（已移出套件）
 
 ---
 
+## 4.5 陷阱（踩過的雷）
+
+- **`.venv` 跑的是主 repo 的 master**：venv 以 PEP 660 editable 安裝把
+    `accident_reconstruction` 指向**主 repo checkout**。worktree 的改動**必須先併進
+    master** 才會在 `python -m accident_reconstruction.*` 生效；`PYTHONPATH` 不會覆蓋
+    editable finder。`data/` 是 gitignored、只在主 repo，跑 pipeline 要在主 repo 目錄。
+- **`overrides.json` 白名單**：`web_app.save_overrides` 重寫整個檔，只保留一份白名單
+    key（geo 錨點、`truncate_boxes_at_impact` 等）。**新增 override key 時，若它不在
+    step-4 表單，務必同步加進該白名單**，否則使用者從工作台重跑會被靜默洗掉。
+- **速度 = homography metric 距離 / 時間**：只有在 GCP 真實涵蓋範圍夠大（涵蓋車輛
+    行經的整段路）時才準。GCP 擠在小範圍（如某些場景 ~18 m）時，殘差雖小但車速會被
+    嚴重低估。詳見 `docs/summary.md`。
+
+---
+
 ## 5. 修 bug
 
 1. 重現並理解根因。
