@@ -1,0 +1,112 @@
+:root {
+  color-scheme: dark;
+  font-family: -apple-system, "Segoe UI", "PingFang TC", "Microsoft JhengHei",
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: #15171c;
+  color: #e7e9ee;
+}
+
+#root {
+  position: relative;
+  overflow: hidden;
+}
+
+.hud {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  padding: 10px 12px;
+  background: rgba(20, 22, 27, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+  max-width: 320px;
+}
+
+.hud b {
+  color: #fff;
+}
+
+.hud .warn {
+  color: #ffcf6b;
+}
+
+.timeline {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  transform: translateX(-50%);
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: min(820px, calc(100% - 32px));
+  padding: 10px 14px;
+  background: rgba(20, 22, 27, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+}
+
+.timeline button {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: #262a31;
+  color: #e7e9ee;
+  border-radius: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.timeline button.active {
+  background: #3b82f6;
+  border-color: #3b82f6;
+}
+
+.timeline input[type="range"] {
+  flex: 1;
+  accent-color: #3b82f6;
+}
+
+.timeline .time {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  min-width: 92px;
+  text-align: right;
+  color: #b9bdc6;
+}
+
+.impact-label {
+  padding: 2px 8px;
+  background: #ff3a3a;
+  color: #fff;
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+  transform: translateY(-6px);
+}
+
+.fatal {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  text-align: center;
+  color: #ffb4b4;
+  font-size: 14px;
+}

@@ -176,3 +176,10 @@ _resolutions/
 _reviews/
 tasks/
 *.local.md
+
+# --- Three.js frontend (frontend/) ---
+node_modules/
+frontend/dist/
+frontend/node_modules/
+frontend/.env
+frontend/public/reconstruction.json
