@@ -95,6 +95,36 @@ overlay 上「合成一個框」。實際追根究柢，這其實是**三種不�
 
 ---
 
+## 車速判定（已知限制，非 bug）
+
+**症狀**：路徑形狀正確，但車速嚴重偏低（BMW 車讀到 ~2–8 km/h，實際 ~40–60）。
+
+**根因**：車速 = homography metric 距離 / 時間。metric 只在 GCP 校正範圍內可信。診斷
+BMW：校正殘差極小（mean 0.33 m）、GCP 兩兩「metric/真實」比值 0.99（區內完美），但
+**全部 GCP 只涵蓋 ~18 m 的真實地面**（`target_span_m`）。車輛行經範圍遠大於此，平面
+homography 在校正區外（尤其近地平線）會壓縮遠處距離，使 metric 位移被低估 ~10–20 倍
+→ 車速跟著被低估。`calibrate_homography.py` 的註解其實已點出此風險。
+
+各場景比較（已校正者尚可，BMW 明顯壞）：
+
+| 場景                  | 車速峰值     | GCP 真實跨度 | 判斷         |
+| --------------------- | ------------ | ------------ | ------------ |
+| pre_impact_motorcycle | car ~53 km/h | —            | 合理         |
+| keelung_xinwu_yier    | ~18–25 km/h  | —            | 偏低但可接受 |
+| BMW 神之鬼切          | car ~8 km/h  | ~18 m        | 明顯被壓縮   |
+
+**修法（使用者端，無程式可代勞）**：重新校正，GCP 要**散佈在車輛行經的整段路**（含車輛
+進場的遠端、路口兩側），不要擠在一小塊地面。範圍夠大後車速即正確。
+
+**已加的程式守門**：`auto_reconstruct` 現在會印出各車速度峰值與 GCP 真實涵蓋範圍＋
+可信度提醒，讓「被壓縮的低速」不再被默默當成真值。
+
+**次要、待修**：對齊（`_aligned_latlon`）對**位置**套了 per-vehicle scale，但**速度**仍用
+未經 scale 的 metric（兩者不一致）。有 `true_vehicle_starts` 的場景，速度應一併套用該
+scale（或直接用對齊後的 lat/lon 以 haversine 重算速度）。
+
+---
+
 ## 工作流程陷阱（重要）
 
 - `.venv` 以 PEP 660 editable 安裝把 `accident_reconstruction` 指向**主 repo 的

@@ -426,6 +426,47 @@ def build_data(csv_path: Path = PROMPT_TRACKS_CSV):
     return motion, draw_metric, impact_frame
 
 
+def gcp_ground_span_m() -> float | None:
+    """Real-world span (m) the scene's GCPs cover, or None if uncalibrated.
+
+    Speed is ``metric distance / time`` and the metric is only trustworthy where
+    the homography was anchored. A small GCP span means vehicles travelling beyond
+    it read implausibly low speeds even though the per-GCP residual is tiny (the
+    fit is good only on that patch). See ``docs/summary.md`` and the calibrate
+    module's span warning.
+    """
+    path = SCENE.calibration_path
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text()).get("target_span_m")
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def print_speed_reliability(motion: dict[str, dict[int, tuple[float, float]]]) -> None:
+    """Print each vehicle's peak speed plus the GCP span it depends on.
+
+    Factual, not a gate: it surfaces the GCP ground span (which bounds speed
+    trust) next to the peak speeds so an under-scaled reading is obvious rather
+    than silently shown.
+    """
+    span = gcp_ground_span_m()
+    peaks = {
+        label: max((s for _, s in track.values()), default=0.0)
+        for label, track in motion.items()
+    }
+    peak_str = ", ".join(f"{k}: {v:.0f} km/h" for k, v in peaks.items())
+    print(f"Peak speed -> {peak_str}")
+    if span is not None:
+        print(
+            f"Speed reliability: GCPs cover ~{span:.0f} m of ground. Speed is only "
+            "as accurate as this scale -- if vehicles travel well beyond it, the "
+            "homography compresses distance and speeds read low; re-calibrate with "
+            "GCPs spread across the whole stretch the vehicles drive."
+        )
+
+
 def main(csv_path: str = str(PROMPT_TRACKS_CSV)) -> None:
     """Run the closed-loop reconstruction and write KML / figure / CSV."""
     data = build_data(Path(csv_path))
@@ -455,6 +496,7 @@ def main(csv_path: str = str(PROMPT_TRACKS_CSV)) -> None:
     print(f"Impact frame: {impact_frame}")
     counts = ", ".join(f"{k}: {len(v)}" for k, v in metric.items())
     print(f"Frames per vehicle: {{{counts}}}")
+    print_speed_reliability(data[0])
     print(f"KML: {AUTO_KML_PATH.resolve()}")
     print(f"Map figure: {AUTO_FIGURE_PATH.resolve()}")
     print(f"CSV: {AUTO_CSV_PATH.resolve()}")
