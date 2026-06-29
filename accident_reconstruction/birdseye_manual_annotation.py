@@ -785,6 +785,68 @@ def _aligned_latlon(
     return out
 
 
+# Speed window matching auto_reconstruct.windowed_motion (smooths single-frame
+# jitter over ~0.6 s).
+SPEED_WINDOW_SECONDS = 0.6
+
+
+def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
+    """Great-circle distance in metres between two ``(lat, lon)`` points."""
+    radius = 6371000.0
+    p1, p2 = math.radians(a[0]), math.radians(b[0])
+    dphi = math.radians(b[0] - a[0])
+    dlmb = math.radians(b[1] - a[1])
+    h = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlmb / 2) ** 2
+    return 2 * radius * math.asin(math.sqrt(h))
+
+
+def aligned_motion(
+    aligned: dict[str, dict[int, tuple[float, float]]], fps: float
+) -> dict[str, dict[int, tuple[float, float]]]:
+    """Per-frame ``(cumulative_m, speed_kmh)`` from each vehicle's aligned lat/lon.
+
+    Speed is measured on the ALIGNED (scale-corrected, road-constrained) path the
+    figure/KML actually draw -- via real ground distance (haversine) -- not the
+    raw homography metric. Otherwise a path the alignment stretched to its true
+    length would still report the compressed homography speed (e.g. a vehicle read
+    ~25 km/h while its drawn path implies ~64). Mirrors the windowing of
+    :func:`accident_reconstruction.auto_reconstruct.windowed_motion`.
+
+    Args:
+        aligned: Per-vehicle aligned ``(lat, lon)`` by frame (falsy entries skipped).
+        fps: Source frames per second.
+
+    Returns:
+        ``{label: {frame: (cumulative_m, speed_kmh)}}``.
+    """
+    out: dict[str, dict[int, tuple[float, float]]] = {}
+    for label, by_frame in aligned.items():
+        frames = [f for f in sorted(by_frame) if by_frame[f]]
+        motion: dict[int, tuple[float, float]] = {}
+        window: list[tuple[int, tuple[float, float]]] = []
+        cumulative = 0.0
+        previous: tuple[float, float] | None = None
+        for frame in frames:
+            point = by_frame[frame]
+            if previous is not None:
+                cumulative += _haversine_m(previous, point)
+            previous = point
+            window.append((frame, point))
+            while (
+                len(window) >= 2 and frame - window[0][0] > SPEED_WINDOW_SECONDS * fps
+            ):
+                window.pop(0)
+            speed = 0.0
+            if len(window) >= 2:
+                first_frame, first_point = window[0]
+                elapsed = (frame - first_frame) / fps
+                if elapsed > 0:
+                    speed = _haversine_m(first_point, point) / elapsed * 3.6
+            motion[frame] = (cumulative, speed)
+        out[label] = motion
+    return out
+
+
 def write_map_figure(data=None, figure_path: Path = MAP_FIGURE_PATH) -> None:
     """Render a north-up map figure: OSM roads + aligned recognised tracks.
 
@@ -796,10 +858,9 @@ def write_map_figure(data=None, figure_path: Path = MAP_FIGURE_PATH) -> None:
     if not GEO_READY:
         print("Scene geo data / calibration incomplete; skipping map figure.")
         return
-    motion, metric, impact_frame = (
-        data if data is not None else collect_vehicle_motion()
-    )
+    _, metric, impact_frame = data if data is not None else collect_vehicle_motion()
     aligned = _aligned_latlon(metric, impact_frame)
+    disp_motion = aligned_motion(aligned, SCENE.fps)
 
     clat, clon = TRUE_IMPACT_LATLON
     scale, size, half = 13.0, 880, 880 / 2
@@ -836,7 +897,8 @@ def write_map_figure(data=None, figure_path: Path = MAP_FIGURE_PATH) -> None:
         draw.line(pts, fill=rgb, width=4, joint="curve")
         sx, sy = pts[0]
         draw.ellipse([sx - 6, sy - 6, sx + 6, sy + 6], fill=rgb, outline=(0, 0, 0))
-        peak = float(np.percentile([s for _, s in motion[label].values()], 90))
+        speeds = [s for _, s in disp_motion.get(label, {}).values()] or [0.0]
+        peak = float(np.percentile(speeds, 90))
         _label(
             draw, (sx + 9, sy - 22), f"{display['name']} 起 約{peak:.0f}km/h", 17, rgb
         )
@@ -875,15 +937,18 @@ def write_csv(data=None, csv_path: Path = ROUTE_CSV_PATH) -> None:
     if not GEO_READY:
         print("Scene geo data / calibration incomplete; skipping CSV.")
         return
-    motion, metric, impact_frame = (
-        data if data is not None else collect_vehicle_motion()
-    )
+    _, metric, impact_frame = data if data is not None else collect_vehicle_motion()
     aligned = _aligned_latlon(metric, impact_frame)
+    disp_motion = aligned_motion(aligned, SCENE.fps)
     lines = ["frame,vehicle,lat,lon,speed_kmh,is_impact"]
     for label in aligned:
         for frame in sorted(aligned[label]):
             lat, lon = aligned[label][frame]
-            speed = motion[label][frame][1] if frame in motion[label] else 0.0
+            speed = (
+                disp_motion[label][frame][1]
+                if frame in disp_motion.get(label, {})
+                else 0.0
+            )
             lines.append(
                 f"{frame},{label},{lat:.7f},{lon:.7f},{speed:.1f},"
                 f"{int(frame == impact_frame)}"
