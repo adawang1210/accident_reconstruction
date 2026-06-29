@@ -49,8 +49,9 @@ overlay 上「合成一個框」。實際追根究柢，這其實是**三種不�
         ultralytics 版本（8.4.78）的 `on_predict_start` 並未完全重設 memory bank，導致**後面
         的段被前面段的記憶拉走**：先跑 f97 進場框（左下角）再跑 f160 手動框，f160 竟回傳
         左下角 `(0,626,102,695)` 而非 prompt 的 720–905。所以手動撞擊後框被「拉回進場位置」。
-    - **修法**：`_segment_masks` 改成**每段建立全新 predictor**，各 re-seed 真正獨立。
-        代價是每段重新載入權重（稍慢），但正確。
+    - **修法**：`_segment_masks` 在每段開頭**重設 predictor 的 `inference_state`／
+        `prompts`**，清掉前一段的記憶，各 re-seed 真正獨立。（重用同一 predictor、不重建
+        模型——見下方效能優化。）
 
 1. **no-backtrack 閘門誤砍手動框**
 
@@ -150,4 +151,7 @@ homography 在校正區外（尤其近地平線）會壓縮遠處距離，使 me
 - `truncate_boxes_at_impact`（模式二自動解）＋ web_app 保留白名單
 - merge 閘門 anchor-aware（手動框不被砍）
 - backtrack 閘門豁免手動框 ＋ `split_overlapping_masks`（模式三）
-- 每段建立全新 SAM2 predictor（修 predictor 重用洩漏記憶，模式三真正主因）
+- 每段重設 predictor `inference_state`/`prompts`（修記憶洩漏，模式三真正主因）
+- 效能：重用 predictor＋段長只跑到下一個 re-seed（9 分 → ~3.5 分）
+- `aligned_motion`：車速改從對齊後 lat/lon 重算（修速度未套 scale）
+- 速度可信度提醒 ＋ AGENTS 陷阱文件 ＋ predictor 重設回歸測試
