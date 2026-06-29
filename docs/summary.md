@@ -119,9 +119,19 @@ homography 在校正區外（尤其近地平線）會壓縮遠處距離，使 me
 **已加的程式守門**：`auto_reconstruct` 現在會印出各車速度峰值與 GCP 真實涵蓋範圍＋
 可信度提醒，讓「被壓縮的低速」不再被默默當成真值。
 
-**次要、待修**：對齊（`_aligned_latlon`）對**位置**套了 per-vehicle scale，但**速度**仍用
-未經 scale 的 metric（兩者不一致）。有 `true_vehicle_starts` 的場景，速度應一併套用該
-scale（或直接用對齊後的 lat/lon 以 haversine 重算速度）。
+**次要 bug（已修）**：對齊（`_aligned_latlon`）對**位置**套了 per-vehicle scale／道路約束，
+但**速度**原本仍用未經 scale 的 homography metric（兩者不一致）。已新增
+`aligned_motion()`：直接從對齊後的 lat/lon 以 haversine＋同樣的時間窗重算速度，`write_csv`／
+`write_map_figure` 改用它。結果（已驗證）：
+
+| 場景                  | 修正前車速峰值 | 修正後             |
+| --------------------- | -------------- | ------------------ |
+| keelung taxi / police | 18 / 25        | **34 / 65** km/h   |
+| pre_impact（scale=1） | 53             | 53（不變，無回歸） |
+
+注意：此修正只影響 geo-ready（有道路對齊）的 `route_auto` 輸出。BMW 無 geo／無
+`true_vehicle_starts`，顯示的是 `route_recognized`（原始投影），速度仍受 homography 尺度
+壓縮——**唯有重新校正（GCP 涵蓋整段路）才能修**。
 
 ---
 
