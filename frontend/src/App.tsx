@@ -3,7 +3,7 @@ import { Canvas } from "@react-three/fiber";
 import * as THREE from "three";
 import { Scene } from "./scene/Scene";
 import { Timeline } from "./ui/Timeline";
-import { useReconstruction } from "./data/useReconstruction";
+import { useReconstruction } from "./io/useReconstruction";
 import { usePlayback } from "./playback/store";
 import { trackEnd } from "./scene/sampleTrack";
 

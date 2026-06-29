@@ -37,7 +37,7 @@ npm run dev            # 開 http://localhost:5173
 ```
 src/
 ├── types.ts                 # reconstruction.json 型別（對應後端 schema）
-├── data/useReconstruction.ts# 載入 JSON（API 或靜態檔）
+├── io/useReconstruction.ts  # 載入 JSON（API 或靜態檔）
 ├── playback/store.ts        # 全域播放時鐘（zustand）：currentTime / 播放 / 速率
 ├── scene/
 │   ├── sampleTrack.ts        # 依 t_sec 的時間內插（保留真實加減速；核心）
