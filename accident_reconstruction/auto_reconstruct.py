@@ -483,13 +483,17 @@ def main(csv_path: str = str(PROMPT_TRACKS_CSV)) -> None:
             write_recognized_csv,
             write_recognized_figure,
             write_recognized_kml,
+            write_reconstruction_json,
         )
 
         recognised_figure = write_recognized_figure()
         write_recognized_kml()
         write_recognized_csv()
+        reconstruction_json = write_reconstruction_json()
         if recognised_figure is not None:
             print(f"Recognised figure: {recognised_figure.resolve()}")
+        if reconstruction_json is not None:
+            print(f"Reconstruction JSON: {reconstruction_json.resolve()}")
     except Exception as error:  # never let the optional view break the run
         print(f"(recognised figure skipped: {error})")
 

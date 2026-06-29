@@ -553,6 +553,7 @@ def _result_files(scene) -> dict:
         "kml": recognised_kml if recognised_kml.exists() else scene.out_kml,
         "csv": recognised_csv if recognised_csv.exists() else scene.out_csv,
         "tracked": scene.prompt_tracked_video,
+        "reconstruction": scene.out_csv.with_name(f"{scene.name}_reconstruction.json"),
     }
     return {kind: path for kind, path in candidates.items() if path.exists()}
 
@@ -751,8 +752,30 @@ def result_file(video: str, kind: str):
         "kml": "application/vnd.google-earth.kml+xml",
         "csv": "text/csv",
         "tracked": "video/mp4",
+        "reconstruction": "application/json",
     }.get(kind)
     return FileResponse(path, media_type=media, filename=path.name)
+
+
+@app.get("/api/reconstruction")
+def reconstruction(video: str | None = None):
+    """The full 2D reconstruction as one JSON doc for a 3D/web frontend.
+
+    Self-contained: per-vehicle tracks (local metres ``x_m``/``z_m`` + lat/lon,
+    ``t_sec``, ``speed_kmh``, ``is_impact``), road centrelines, the impact point,
+    fps and a speed-reliability hint -- no CSV parsing or re-projection client-side.
+    Written by the pipeline run; 404 until the scene has been reconstructed.
+    """
+    scene = _scene_for_video(video) if video else SCENE
+    if scene is None:
+        return JSONResponse({"error": "no scene"}, status_code=404)
+    path = scene.out_csv.with_name(f"{scene.name}_reconstruction.json")
+    if not path.exists():
+        return JSONResponse(
+            {"error": "not ready -- run the pipeline for this clip first"},
+            status_code=404,
+        )
+    return JSONResponse(json.loads(path.read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":

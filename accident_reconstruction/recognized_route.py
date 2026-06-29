@@ -34,6 +34,7 @@ from PIL import Image, ImageDraw
 
 from accident_reconstruction.auto_reconstruct import (
     detect_impact,
+    gcp_ground_span_m,
     load_anchors,
     project_metric,
     windowed_motion,
@@ -47,6 +48,7 @@ from accident_reconstruction.birdseye_manual_annotation import (
     VEHICLE_DISPLAY,
     _kml_linestring,
     _label,
+    aligned_motion,
 )
 from accident_reconstruction.calibrate_homography import (
     latlon_to_local_meters,
@@ -203,6 +205,133 @@ def recognized_latlon() -> dict[str, dict[int, tuple[float, float]]]:
         if latlon:
             paths[label] = latlon
     return paths
+
+
+def build_reconstruction() -> dict:
+    """Assemble the whole 2D reconstruction as one JSON-ready dict for a frontend.
+
+    A single self-contained document so a 3D/web viewer (e.g. Three.js) needs no
+    CSV parsing or re-projection: per-vehicle tracks (local metres ``x_m``/``z_m``
+    AND lat/lon, time, speed, impact flag), the road centrelines, the impact point,
+    fps and a speed-reliability hint. All positions share ONE local east/north
+    metre plane (``x_m`` = east, ``z_m`` = north, origin = the homography's
+    ``origin_latlon``), so vehicles, roads and the impact line up directly as
+    ground-plane coordinates.
+
+    Returns:
+        ``{"scene", "ready", "fps", "impact_frame", "axes", "origin_latlon",
+        "impact", "vehicles", "roads", "speed_reliability"}``. ``ready`` is False
+        (with a ``reason``) when the homography is not georeferenced yet.
+
+    Examples:
+        ```python
+        data = build_reconstruction()
+        data["ready"] and data["vehicles"]["car"]["track"][0].keys()
+        # dict_keys(['frame', 't_sec', 'x_m', 'z_m', 'lat', 'lon', 'speed_kmh',
+        #            'is_impact'])
+        ```
+    """
+    if not _calibration_ready():
+        return {
+            "scene": SCENE.name,
+            "ready": False,
+            "reason": "homography not GPS-calibrated",
+        }
+    paths = recognized_latlon()
+    fps = float(SCENE.fps)
+    impact_frame = SCENE.impact_frame_override
+    if impact_frame is None:
+        impact_frame = detect_impact(
+            project_metric(load_anchors(SCENE.prompt_tracks_csv))
+        )
+    motion = aligned_motion(paths, fps)  # speed consistent with these positions
+    origin = ORIGIN_LATLON
+
+    def to_xz(lat: float, lon: float) -> tuple[float, float]:
+        east, north = latlon_to_local_meters(
+            np.array([[lat, lon]], dtype=np.float64), origin
+        )[0]
+        return float(east), float(north)
+
+    vehicles: dict[str, dict] = {}
+    for index, (label, track) in enumerate(paths.items()):
+        display = _display_for(label, index)
+        speeds = motion.get(label, {})
+        samples = []
+        for frame in sorted(track):
+            lat, lon = track[frame]
+            east, north = to_xz(lat, lon)
+            samples.append(
+                {
+                    "frame": frame,
+                    "t_sec": round(frame / fps, 4),
+                    "x_m": round(east, 3),
+                    "z_m": round(north, 3),
+                    "lat": round(lat, 7),
+                    "lon": round(lon, 7),
+                    "speed_kmh": round(speeds.get(frame, (0.0, 0.0))[1], 1),
+                    "is_impact": frame == impact_frame,
+                }
+            )
+        vehicles[label] = {
+            "name": display.get("name", label),
+            "color_rgb": [int(c) for c in display["rgb"]],
+            "road": ROAD_NAMES.get(label, label),
+            "track": samples,
+        }
+
+    roads: dict[str, list] = {}
+    for label, centreline in (ROAD_CENTERLINES or {}).items():
+        points = []
+        for lat, lon in centreline:
+            east, north = to_xz(lat, lon)
+            points.append(
+                {"x_m": round(east, 3), "z_m": round(north, 3), "lat": lat, "lon": lon}
+            )
+        roads[label] = points
+
+    impact = None
+    if TRUE_IMPACT_LATLON is not None:
+        east, north = to_xz(*TRUE_IMPACT_LATLON)
+        impact = {
+            "frame": impact_frame,
+            "lat": TRUE_IMPACT_LATLON[0],
+            "lon": TRUE_IMPACT_LATLON[1],
+            "x_m": round(east, 3),
+            "z_m": round(north, 3),
+        }
+
+    return {
+        "scene": SCENE.name,
+        "ready": True,
+        "fps": fps,
+        "impact_frame": impact_frame,
+        "axes": "x_m=east, z_m=north (metres, north-up ground plane)",
+        "origin_latlon": [origin[0], origin[1]] if origin else None,
+        "impact": impact,
+        "vehicles": vehicles,
+        "roads": roads,
+        "speed_reliability": {"gcp_ground_span_m": gcp_ground_span_m()},
+    }
+
+
+def write_reconstruction_json(path: Path | None = None) -> Path | None:
+    """Write :func:`build_reconstruction` to ``<scene>_reconstruction.json``.
+
+    Args:
+        path: Output path; defaults to the scene's ``<name>_reconstruction.json``
+            next to the other route outputs.
+
+    Returns:
+        The path written, or None when the scene is not calibrated yet.
+    """
+    data = build_reconstruction()
+    if not data.get("ready"):
+        return None
+    path = path or SCENE.out_csv.with_name(f"{SCENE.name}_reconstruction.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
 
 
 def write_recognized_figure(figure_path: Path | None = None) -> Path | None:
