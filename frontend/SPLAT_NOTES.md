@@ -137,6 +137,65 @@ splat 由 SfM 定出**任意尺度/朝向/原點**（LiDAR 來源通常已是公
 
 ---
 
+## 8. 三方 AI 交叉驗證與補充（Manus / Gemini / DeepSeek，2026-06）
+
+三份獨立報告與本筆記**核心結論一致**：要 Forza 級必須實拍；Google 截圖「輸出 ≤ 輸入」無法
+超越來源；架構（靜態 splat 背景＋資料驅動車輛疊加）是業界標準做法。以下是它們補上的**新
+要點**與**一個分歧（含我的裁決）**：
+
+### 8.1 新增可行路線：「不到現場、但仍是真實拍攝」的代拍服務
+
+這才是「不想/不能自己去」的正解（不是 Google 截圖）：
+
+- **Varjo Teleport Autopilot**（2026）：地圖上畫一個多邊形 → 系統規劃航線、**無人機自動
+    飛拍** → 幾小時後回傳 splat 連結。
+- **DJI Terra V5.0+**：無人機 + **RTK 地理座標**，直接輸出 **georeferenced**（帶真實公尺座標）
+    的 `.ply`/3D Tiles → **省掉 §5 的手動對位**（變換矩陣自動就有）。約 $2,800–4,400。
+- 或在地方空拍社團發包飛手繞路口拍一圈（成本通常數千元）。
+
+> 這些都是「真實多視角影像」，畫質可超越 Google 3D Tiles；與「Google 截圖」本質不同。
+
+### 8.2 分歧：Google Earth Studio 影格能不能做出更好的 splat？
+
+- **Manus**：宣稱「大幅超越」3D Tiles（引 GBM 論文，說能還原 mesh 丟失的輻射場資訊）。
+- **Gemini / DeepSeek**：**不行**——Earth 來源是空照/斜俯視，缺**地面水平視角**，重建出的是
+    「融化的 3DGS」，畫質 ≤ 3D Tiles。
+- **我的裁決（採 Gemini/DeepSeek）**：GBM 論文做的是**建築物 mesh 擷取**（俯視就夠），不是
+    路口**地面近景**的 photoreal。輸出 ≤ 輸入的原理成立：Earth Studio 只能給你**平滑的相機軌跡
+    ＋離線自包含資產**，但**換不到地面清晰度**——而那正是你嫌 Google tiles 糊的地方。故不採。
+
+### 8.3 對位 UX：前端可視化拖曳（比 .env 旋鈕更好用）
+
+Gemini 的建議值得採用：用 drei `<TransformControls>` 或 `leva` GUI 綁定 splat 的
+`position/rotation/scale`，**一邊看 splat 的車道線、一邊拖到貼合 `reconstruction.json` 畫出的
+軌跡線**，對齊後把那組 `{pos,rot,scale}` 寫死即為相似變換矩陣。比盲調 `.env` 數字直覺。
+（之後可把 `SplatScene` 的 env 旋鈕加一個 dev-only 的 TransformControls。）
+
+### 8.4 效能：COOP/COEP 與我們的取捨（重要修正）
+
+- Gemini/DeepSeek 指出：mkkellogg 用 Web Worker 排序，開 `SharedArrayBuffer` 才快；需伺服器
+    標頭 `Cross-Origin-Opener-Policy: same-origin` + `Cross-Origin-Embedder-Policy: require-corp`。
+- **但我們的場景同時載入跨來源資源**（drei 的 HDRI、Google tiles）——`require-corp` 會
+    **擋掉沒有 CORP 標頭的跨來源資源**，反而弄壞 HDRI/tiles。
+- **取捨**：目前 `SplatScene` 用 `sharedMemoryForWorkers: false`（排序較慢但相容）。要加速就得
+    改用 COEP `credentialless`、或把 HDRI/底圖全部自架同源後再開 `require-corp`。**先求正確、
+    再求快**。
+
+### 8.5 法律 / 鑑識（這是車禍重建，要知道界線）
+
+- 三方一致：3DGS 在法庭屬 **「示意性視覺輔助（demonstrative aid）」**，**不是測量證據**；
+    正式鑑識主流仍是 PC-Crash / Virtual CRASH ＋ LiDAR 真值。
+- 有 2026 論文評估 3DGS 用於虛擬犯罪現場重建的精度。若要往鑑識走，需保留原始素材、GCP
+    量測、處理日誌，並以 LiDAR 點雲當幾何真值，splat 只當貼圖層。
+
+### 8.6 其他已知限制（補進 §6）
+
+- **反光烤死**：積水/玻璃的反光被烤進特定視角；動態車開過去不會正確遮擋倒影。
+- **splat ↔ Google tiles 接縫**：兩者深度遮擋很難無縫，邊緣通常要加 `fog` 過渡。
+- **Postshot** 2026 內建「Dynamic Object Removal」，可自動剔除跨影格移動特徵（減少烤入車人）。
+
+---
+
 ## 7. 參考來源
 
 - 2026 工具比較：[Polyvia3D](https://www.polyvia3d.com/guides/gaussian-splatting-tools-comparison)
@@ -149,3 +208,9 @@ splat 由 SfM 定出**任意尺度/朝向/原點**（LiDAR 來源通常已是公
 - 對位/地理座標：[GeoRefGS（MDPI 2026）](https://www.mdpi.com/2504-446X/10/3/195)
     ／[GIS 實務指南](https://geo-matching.com/articles/gaussian-splatting-for-mapping-and-gis-a-practical-guide-to-the-new-3d-standard)
 - splat viewer 比較：[Swyvl — Best splat viewers 2026](https://swyvl.io/blog/best-gaussian-splat-viewers/)
+- 代拍/帶座標輸出：[Varjo Teleport](https://teleport.varjo.com)
+    ／[DJI Terra](https://www.dji.com/terra)
+- 編輯/清雜物：[SuperSplat 編輯器](https://superspl.at/editor)
+- 三方交叉驗證來源（§8）：Manus / Gemini / DeepSeek 報告（2026-06，含
+    [GBM 論文](https://arxiv.org/abs/2501.00625)、[Postshot](https://www.jawset.com/)、
+    drei `<Splat>`、3DGS 鑑識精度研究）
