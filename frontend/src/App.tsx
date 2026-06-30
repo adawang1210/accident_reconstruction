@@ -6,6 +6,8 @@ import { Timeline } from "./ui/Timeline";
 import { useReconstruction } from "./io/useReconstruction";
 import { usePlayback } from "./playback/store";
 import { trackEnd } from "./scene/sampleTrack";
+import { HAS_SPLAT } from "./scene/SplatScene";
+import { GOOGLE_TILES_KEY } from "./scene/GoogleTiles";
 
 export function App() {
   const { data, error } = useReconstruction();
@@ -36,6 +38,8 @@ export function App() {
   if (!data) return <div className="fatal">載入中…</div>;
 
   const span = data.speed_reliability?.gcp_ground_span_m;
+  const useTiles =
+    !HAS_SPLAT && Boolean(GOOGLE_TILES_KEY && data.origin_latlon);
   return (
     <>
       <div className="hud">
@@ -60,10 +64,12 @@ export function App() {
       <Canvas
         shadows
         dpr={[1, 2]}
-        camera={{ position: [40, 45, 60], fov: 50, near: 0.5, far: 5_000_000 }}
+        camera={{ position: [40, 45, 60], fov: 50, near: 0.5, far: useTiles ? 5_000_000 : 5000 }}
         gl={{
           antialias: true,
-          logarithmicDepthBuffer: true,
+          // Only Google 3D Tiles needs the huge ECEF depth range; it breaks the
+          // Gaussian-splat shader, so enable it solely for tiles.
+          logarithmicDepthBuffer: useTiles,
           toneMapping: THREE.ACESFilmicToneMapping,
           toneMappingExposure: 1.0,
         }}

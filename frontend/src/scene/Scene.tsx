@@ -9,6 +9,7 @@ import { Roads } from "./Roads";
 import { Vehicle } from "./Vehicle";
 import { ImpactMarker } from "./ImpactMarker";
 import { GoogleTiles, GOOGLE_TILES_KEY } from "./GoogleTiles";
+import { SplatScene, HAS_SPLAT } from "./SplatScene";
 
 // Drives the shared playback clock once per rendered frame.
 function PlaybackDriver() {
@@ -45,18 +46,24 @@ export function Scene({ data }: { data: Reconstruction }) {
     camera.updateProjectionMatrix();
   }, [camera, center]);
 
-  // Real photoreal environment (Google 3D Tiles) when a key + GPS are present;
-  // otherwise the placeholder ground.
-  const useTiles = Boolean(GOOGLE_TILES_KEY && data.origin_latlon);
+  // Basemap precedence: Gaussian Splat (real capture) > Google 3D Tiles (GPS) >
+  // placeholder ground.
+  const useSplat = HAS_SPLAT;
+  const useTiles = !useSplat && Boolean(GOOGLE_TILES_KEY && data.origin_latlon);
+  const usePlaceholder = !useSplat && !useTiles;
 
   return (
     <>
       {!useTiles && (
         <>
           <color attach="background" args={["#15171c"]} />
-          <fog attach="fog" args={["#15171c", 120, 320]} />
+          {usePlaceholder && (
+            <fog attach="fog" args={["#15171c", 120, 320]} />
+          )}
         </>
       )}
+
+      {useSplat && <SplatScene />}
 
       {/* HDRI image-based lighting for realistic car paint/reflections. */}
       <Environment preset="city" />
@@ -85,7 +92,7 @@ export function Scene({ data }: { data: Reconstruction }) {
       )}
 
       <group>
-        {!useTiles && <Ground />}
+        {usePlaceholder && <Ground />}
         <Roads roads={data.roads} />
         {Object.entries(data.vehicles).map(([id, v]) => (
           <Vehicle key={id} data={v} />
