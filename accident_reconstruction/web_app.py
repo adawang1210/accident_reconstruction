@@ -776,7 +776,16 @@ def run_status(video: str | None = None) -> dict:
         return {"scene": None, "running": False, "log": []}
     job = _JOBS.get(scene.name)
     if job is None:
-        return {"scene": scene.name, "running": False, "log": [], "started": False}
+        # Nothing ran in THIS process, but finished outputs may already be on disk
+        # (a previous session, or a CLI run). Report them so a server restart does
+        # not hide existing results behind "尚無結果"; ``started`` stays False.
+        return {
+            "scene": scene.name,
+            "running": False,
+            "log": [],
+            "started": False,
+            "results": list(_result_files(scene)),
+        }
     results = list(_result_files(scene)) if job["done"] else []
     return {
         "scene": scene.name,
