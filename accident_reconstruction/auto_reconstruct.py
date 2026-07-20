@@ -175,6 +175,20 @@ def local_scale_factors(
     divides by the known real length. A factor near 1 means the homography scale is
     right there; well below 1 means it compresses distance (so speed reads low).
 
+    IMPORTANT -- this assumes a SIDE-ON view. The box long axis is the vehicle's
+    length only when it is filmed from the side; on the rear/head-on intersection
+    CCTV typical of these clips the box is wider than tall, so the long axis is the
+    vehicle's WIDTH (~1.8 m for a car) being divided by its length. Measured
+    2026-07-20: the BMW scene's ``car`` had w/h = 1.24 / 1.39 / 2.11 at the three
+    sampled frames (all horizontal long axis), as did ``taoyuan_yangmei``'s ``car``.
+
+    So do NOT invert the factor into a speed multiplier. What IS meaningful is its
+    CONSISTENCY along the track: a stable factor (BMW: 0.32 / 0.32 / 0.37) says the
+    scale is uniformly off rather than blowing up by extrapolation, while a spike
+    (``yilan_wujie``'s motorcycle hitting 4.66x mid-crash) just means the box
+    exploded as the rider was thrown. Making this quantitative needs a view-angle
+    test or 3D-model-to-box alignment -- see ``frontend/SPLAT_NOTES.md`` §11.
+
     Args:
         boxes_by_frame: One vehicle's ``{frame: (x1, y1, x2, y2)}`` boxes.
         project: Callable mapping an ``(n, 2)`` pixel array to metric ``(n, 2)``

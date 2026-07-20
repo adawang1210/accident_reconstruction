@@ -298,9 +298,13 @@ RMSE（> 0.5 m 會警告對應點可能讀錯／共線）。對應實作見
         影片調校——但明言 dashcam 因動態光照／反光很難、幾何易失真。
 - **單一固定 CCTV（無視差）＝ 傳統 SfM／splatting 直接失敗**。新興繞道法（品質是「看起來
     對」、非量測級）：
-    - [`eldar/flash3d`](https://github.com/eldar/flash3d)（3DV 2025）：**前饋、單張圖**直接出 3D 場景。
-    - DUSt3R／MASt3R／[MV-DUSt3R+（CVPR 2025）](https://mv-dust3rp.github.io/)：**免相機校正、
-        免姿態**，稀疏幾張圖即可重建。
+    - **[VGGT（CVPR 2025 最佳論文）](https://openaccess.thecvf.com/content/CVPR2025/papers/Wang_VGGT_Visual_Geometry_Grounded_Transformer_CVPR_2025_paper.pdf)
+        —— 前饋法首選，已取代下面的 DUSt3R／MASt3R 系列。** 單次前饋約 **0.2 秒**
+        （DUSt3R 需 ~10 秒全域對齊），輸入 1 張～數百張皆可，一次輸出相機參數＋深度圖＋
+        點圖＋3D 點軌跡。架構原生支援單張輸入（不像 DUSt3R 要複製成 pair）。
+    - [`eldar/flash3d`](https://github.com/eldar/flash3d)（3DV 2025）：前饋、單張圖直接出 3D 場景。
+    - DUSt3R／MASt3R／[MV-DUSt3R+（CVPR 2025）](https://mv-dust3rp.github.io/)：免相機校正、
+        免姿態，稀疏幾張圖即可重建（已被 VGGT 在多項基準上超越）。
     - SmallGS：小基線影片估姿態、不需強視差；SVG3D：用單目深度估計出 Gaussian。
     - 綜整清單：[`ziplab/Awesome-Feed-Forward-3D`](https://github.com/ziplab/Awesome-Feed-Forward-3D)。
 
@@ -332,6 +336,61 @@ RMSE（> 0.5 m 會警告對應點可能讀錯／共線）。對應實作見
 **一句話**：不一定要到現場——若行車紀錄器鏡頭有移動、或路口有 Mapillary／KartaView 覆蓋，
 都能不到現場重建；但**單一靜止 CCTV 先天無視差**，只能用前饋法生「示意級」背景，要**量測級
 ＋ 法庭可辯護**仍以現場實拍最穩。
+
+---
+
+## 11. 交通監視器自動標定 —— 直接解「尺度」而非 3D（2026-07 網路研究）
+
+§1–§10 都在談「怎麼把路口重建成 3D」。但本專案目前真正卡住的是**車速尺度**
+（6 個場景裡 4 個只有原始投影、BMW 讀出 car 8.2／motorbike 114.6 km/h 這種不合理值）。
+這是另一個成熟領域，前面完全沒查到。
+
+### 11.1 文獻：固定路口攝影機測速已可到 ~1 km/h
+
+- [Sochor 等人 BrnoCompSpeed](https://arxiv.org/abs/1702.06441v1)（IEEE T-ITS）：
+    18 支 full-HD 影片、20,865 台車，speed 由 LiDAR 光閘 + GPS 驗證。
+- [3D 模型 bounding box 對齊標定](https://www.sciencedirect.com/science/article/abs/pii/S1077314217301108)
+    （CVIU）：**平均測速誤差 1.10 km/h**；改用兩消失點 + 自動尺度推論後，
+    **測速誤差較前人降低 86%**。
+- [Revaud & Guérin（ICCV 2021）](https://openaccess.thecvf.com/content/ICCV2021/papers/Revaud_Robust_Automatic_Monocular_Vehicle_Speed_Estimation_for_Traffic_Surveillance_ICCV_2021_paper.pdf)：更穩健的單目測速。
+
+**方法骨架**：VP1（車流行進方向）＋ VP2（車道標線／車身邊緣的垂直方向）→ 還原完整
+相機模型；**尺度由「已知尺寸的 3D 車模與 2D bounding box 對齊」推得**。
+
+> 注意這比 `auto_reconstruct.print_length_sanity` 的做法嚴謹：後者取 box 長軸除以車長，
+> 隱含「側面視角」假設，在車尾視角量到的其實是**車寬**（見該函式 docstring 的警告）。
+> 3D 車模對齊沒有這個問題。
+
+可用碼：[`JakubSochor/BrnoCompSpeed`](https://github.com/JakubSochor/BrnoCompSpeed)
+（官方，Python 2、資料集 ~200GB）、[`kocurvik/deep_vp`](https://github.com/kocurvik/deep_vp)
+（DL 版消失點偵測，ICANN 2021，**授權未標示**、商用前須確認）。
+
+### 11.2 對本專案的可行性實測（2026-07-20，結論：不能照抄）
+
+實際拿我們的資料驗證兩個前置條件，**都不成立**：
+
+1. **VP1 無法從車輛軌跡取得。** 消失點需要 ≥2 條「3D 平行」的線。實測每個場景的兩台車
+    都走**不同方向**（碰撞的本質就是交會）：keelung 176.8° vs 139.5°、taoyuan 154.0° vs
+    2.2°、BMW 25.1° vs 141.6°。每個路向只有一條軌跡線 → 無法三角定位。
+    BrnoCompSpeed 能成立是因為高速公路攝影機一小時內有大量**同向**車流，
+    而我們是短片段 + 兩台交會車。
+
+2. **車道虛線自動偵測失敗。** 對 BMW frame 0 跑「白色 + 細長 + 高填充率」偵測，18 個候選
+    全是誤判：BMW 後擋風玻璃（185px）、休旅車車身（154px）、人孔蓋（207px）、
+    腳踏車圖示（141px）。**一條真正的車道虛線都沒抓到**——因為該畫面 BMW 行經區
+    根本沒有虛線，只有實線邊線、箭頭、圖示與斑馬線；唯一的虛線在遠處另一段路。
+
+### 11.3 結論與下一步
+
+- 兩條路線（VP 標定／距離約束）**都收斂到同一個前置條件：在畫面上取得已知真實距離的
+    地面特徵**。而 `calibrate_homography` 的 `distance_constraints` 機制已經建好在等這個輸入。
+- **仍可行的 VP 路線**：改用**實線車道邊線**（與路向平行、BMW 畫面中清楚可見）而非車輛軌跡
+    來解 VP1，斑馬線條紋（彼此平行）可解 VP2。這條沒實作，但前提成立。
+- **最短路徑仍是人工點選**：由使用者在互動校正介面點兩個已知距離的點
+    （車道虛線 4 m／間距 6 m，設置規則 §182），餵進既有的 `distance_constraints`。
+- **低成本交叉檢查**：[Apple Depth Pro](https://arxiv.org/html/2410.02073v1)（不需相機內參即給
+    絕對公制深度、\<1 秒）、[Metric3D v2](https://dl.acm.org/doi/abs/10.1109/TPAMI.2024.3444912)、
+    UniDepth v2 —— 可獨立估一組尺度來驗證 homography 是否真的壓縮了 3 倍。
 
 ---
 
