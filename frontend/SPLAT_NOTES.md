@@ -282,6 +282,59 @@ RMSE（> 0.5 m 會警告對應點可能讀錯／共線）。對應實作見
 
 ---
 
+## 10. 一定要現場拍攝嗎？非現場路線調查（2026-07 網路研究）
+
+短答：**不一定，取決於素材來源**，但清晰度與鑑識可信度各有取捨。三條「不到現場」路線：
+
+### 10.1 路線 A — 直接用「案發影片本身」重建
+
+- **鏡頭會移動（行車紀錄器開過路口）**：可跑標準 video → 3DGS。
+    - [`Nannigalaxy/video-3d-reconstruction-gsplat`](https://github.com/Nannigalaxy/video-3d-reconstruction-gsplat)：
+        FFmpeg 抽幀 → COLMAP SfM → Speedy-Splat 訓練（repo 本身 MIT，但 Speedy-Splat
+        僅限研究非商用）。**需要幀間有視差／位移**才成。
+    - [`zju3dv/street_gaussians`](https://github.com/zju3dv/street_gaussians)（ECCV 2024）：
+        單目影片重建動態都市場景，會分離動態車輛。
+    - [RDC-GS（CGF 2026）](https://onlinelibrary.wiley.com/doi/10.1111/cgf.70315)：專為行車紀錄器
+        影片調校——但明言 dashcam 因動態光照／反光很難、幾何易失真。
+- **單一固定 CCTV（無視差）＝ 傳統 SfM／splatting 直接失敗**。新興繞道法（品質是「看起來
+    對」、非量測級）：
+    - [`eldar/flash3d`](https://github.com/eldar/flash3d)（3DV 2025）：**前饋、單張圖**直接出 3D 場景。
+    - DUSt3R／MASt3R／[MV-DUSt3R+（CVPR 2025）](https://mv-dust3rp.github.io/)：**免相機校正、
+        免姿態**，稀疏幾張圖即可重建。
+    - SmallGS：小基線影片估姿態、不需強視差；SVG3D：用單目深度估計出 Gaussian。
+    - 綜整清單：[`ziplab/Awesome-Feed-Forward-3D`](https://github.com/ziplab/Awesome-Feed-Forward-3D)。
+
+### 10.2 路線 B — 用「別人已拍好的街景」（你不用到現場）
+
+- **Mapillary／KartaView**：群眾外包街景照片，**CC-BY-SA 授權可合法用**（不像 Google 街景
+    禁止衍生 3D）。若該路口有覆蓋，抓多張街景 → COLMAP／3DGS；KartaView 本身就有 3D
+    pointcloud 視覺化。**這是「不到現場」裡法律＋品質最平衡的選項**（前提：該路口有人拍過）。
+- **Google 街景**：ToS **禁止**做衍生 3D 資產 → 法律風險，避免（§1 已述）。
+- **Google Earth 影像 → 3DGS**（[r3v3r3seEntropy/Gaussian-Splat](https://github.com/r3v3r3seEntropy/Gaussian-Splat)、
+    [Waterloo 論文](https://arxiv.org/pdf/2405.11021)）：只有**航拍級清晰度**（與 §1 同限制，糊）。
+
+### 10.3 路線 C — 已有人做過「車禍／鑑識」3D 重建
+
+- [Comprehensive Forensic Tool for Crime Scene and Traffic Accident 3D Reconstruction
+    （MDPI Algorithms 2025）](https://doi.org/10.3390/a18110707)：整合 3D 重建 ＋ **撞擊速度估計
+    （EBS 模型）** ＋ YOLOv8 物件偵測。與本專案目標高度重疊。
+- [3DGS 虛擬犯罪現場重建精度（Frontiers 2026）](https://www.frontiersin.org/journals/computer-science/articles/10.3389/fcomp.2026.1755361/full)。
+
+### 10.4 對本專案的結論
+
+| 你的素材                           | 建議路線                                        | 品質／可信度             |
+| ---------------------------------- | ----------------------------------------------- | ------------------------ |
+| 行車紀錄器（鏡頭會動）             | A：video → COLMAP → 3DGS（street_gaussians 等） | 視差夠可達量測級         |
+| 單一固定 CCTV（不動）              | A：Flash3D／DUSt3R 前饋單／少圖                 | 只堪「示意背景」、非量測 |
+| 該路口 Mapillary／KartaView 有覆蓋 | B：抓群眾街景重建                               | 好，且合法、免到現場     |
+| 要法庭等級逼真＋可辯護             | 現場實拍（§2）                                  | 黃金標準                 |
+
+**一句話**：不一定要到現場——若行車紀錄器鏡頭有移動、或路口有 Mapillary／KartaView 覆蓋，
+都能不到現場重建；但**單一靜止 CCTV 先天無視差**，只能用前饋法生「示意級」背景，要**量測級
+＋ 法庭可辯護**仍以現場實拍最穩。
+
+---
+
 ## 7. 參考來源
 
 - 2026 工具比較：[Polyvia3D](https://www.polyvia3d.com/guides/gaussian-splatting-tools-comparison)
