@@ -109,8 +109,9 @@ def test_windowed_motion_uses_real_timestamps() -> None:
     """
     from accident_reconstruction.auto_reconstruct import windowed_motion
 
-    track = {0: (0.0, 0.0), 10: (10.0, 0.0)}
-    times = {0: 0.0, 10: 0.5}
+    # Three samples with evenly spread steps, so the speed window trusts them.
+    track = {0: (0.0, 0.0), 5: (5.0, 0.0), 10: (10.0, 0.0)}
+    times = {0: 0.0, 5: 0.25, 10: 0.5}
     motion = windowed_motion(track, times, fps=25.0)
     assert abs(motion[10][1] - 72.0) < 1e-6
 

@@ -314,6 +314,7 @@ def windowed_motion(
     track: dict[int, tuple[float, float]],
     times: Mapping[int, float] | None = None,
     fps: float = FPS,
+    jump_guard: bool = True,
 ) -> dict[int, tuple[float, float]]:
     """Compute ``(cumulative_m, speed_kmh)`` per frame for one metric track.
 
@@ -328,11 +329,14 @@ def windowed_motion(
         times: Optional ``{frame: t_sec}`` real timestamps (see
             :func:`accident_reconstruction.time_axis.load_frame_times`).
         fps: Nominal frames per second for the ``times``-absent fallback.
+        jump_guard: Suppress jump-dominated windows (displayed speeds); pass
+            False for the settle/truncation control stream (see
+            :func:`accident_reconstruction.motion.windowed_speed`).
 
     Returns:
         ``(cumulative_m, speed_kmh)`` by frame.
     """
-    return windowed_speed(track, fps, euclidean, times)
+    return windowed_speed(track, fps, euclidean, times, jump_guard)
 
 
 # Two vehicles within this metric distance are treated as in contact. Note this
@@ -569,8 +573,13 @@ def build_data(csv_path: Path = PROMPT_TRACKS_CSV):
     # no ``struck_full``, falls back to the impact frame.
     stop_vehicle = SCENE.resolved_stop_vehicle
     min_speed = SCENE.min_traj_speed_kmh
+    # CONTROL stream: no jump guard. The settle gate compares speeds against
+    # ``min_speed``, and a guard zero (window flushed by a tracking gap at the
+    # crash) would misread a tumbling vehicle as "at rest", moving the cut and --
+    # through the alignment's anchors -- every drawn position. Spikes are harmless
+    # here: they only keep a vehicle "moving", which is the historic behaviour.
     full_motion = {
-        label: windowed_motion(track, times, SCENE.fps)
+        label: windowed_motion(track, times, SCENE.fps, jump_guard=False)
         for label, track in metric.items()
     }
     for label, track in list(metric.items()):
