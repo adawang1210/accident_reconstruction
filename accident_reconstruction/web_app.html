@@ -958,7 +958,8 @@ async function loadResults() {
   (scene.vehicles || []).forEach((v) => { vinfo[v.name] = { display: v.display, color: rgbCss(v.bgr) }; });
 
   // parse the route CSV once into per-vehicle stats
-  const rows = (await (await fetch("/api/result?kind=csv&video=" + vid)).text()).trim().split(/\r?\n/);
+  const rows = (await (await fetch("/api/result?kind=csv&video=" + vid)).text())
+    .trim().split(/\r?\n/).filter((ln) => !ln.startsWith("#"));  // skip reliability note
   const head = rows.shift().split(","), ix = (n) => head.indexOf(n);
   const veh = {}; let impact = null, impactFrame = null, fMin = Infinity, fMax = -Infinity, palette = 0;
   for (const ln of rows) {

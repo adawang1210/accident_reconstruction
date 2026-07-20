@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+
+from accident_reconstruction.time_axis import window_elapsed
 
 # Speed = displacement across the samples within this window / elapsed time.
 # Smooths single-frame anchor jitter without lagging genuine acceleration.
@@ -30,6 +32,7 @@ def windowed_speed(
     track: dict[int, Point],
     fps: float,
     distance: Callable[[Point, Point], float],
+    times: Mapping[int, float] | None = None,
 ) -> dict[int, tuple[float, float]]:
     """Per-frame ``(cumulative_m, speed_kmh)`` over ``SPEED_WINDOW_SECONDS``.
 
@@ -39,6 +42,11 @@ def windowed_speed(
         fps: Source frames per second; the window spans ``seconds * fps`` frames.
         distance: Metric between two points -- :func:`euclidean` for the metric
             plane, a haversine for lat/lon.
+        times: Optional ``{frame: t_sec}`` real per-frame timestamps (PTS). When
+            given, both the window span and the elapsed time are measured on them,
+            so a variable-frame-rate clip is not timed at a wrong uniform cadence.
+            Without them both fall back to the frame delta over ``fps`` (see
+            :func:`accident_reconstruction.time_axis.window_elapsed`).
 
     Returns:
         ``{frame: (cumulative_m, speed_kmh)}``.
@@ -53,12 +61,15 @@ def windowed_speed(
             cumulative += distance(previous, point)
         previous = point
         window.append((frame, point))
-        while len(window) >= 2 and frame - window[0][0] > SPEED_WINDOW_SECONDS * fps:
+        while (
+            len(window) >= 2
+            and window_elapsed(times, window[0][0], frame, fps) > SPEED_WINDOW_SECONDS
+        ):
             window.popleft()
         speed = 0.0
         if len(window) >= 2:
             first_frame, first_point = window[0]
-            elapsed = (frame - first_frame) / fps
+            elapsed = window_elapsed(times, first_frame, frame, fps)
             if elapsed > 0:
                 speed = distance(first_point, point) / elapsed * 3.6
         motion[frame] = (cumulative, speed)

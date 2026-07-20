@@ -65,6 +65,12 @@ class SceneConfig:
             on this point (translation + rotation + uniform scale), countering the
             fisheye homography's distance compression. Without it a vehicle keeps
             the rotation-only road alignment (shape/length preserved, may be short).
+        vehicle_length_m: ``{label: length_m}`` known real length of a vehicle
+            (e.g. ``{"car": 4.7}``). Purely a diagnostic input: ``auto_reconstruct``
+            projects that vehicle's box long-axis through the homography at a few
+            frames and prints the local scale factor (projected length / real
+            length), so an under-scaled homography (the main speed-underestimate
+            cause) is quantified. It does NOT change any speed or position.
     """
 
     name: str
@@ -86,6 +92,7 @@ class SceneConfig:
     true_impact_latlon: tuple[float, float] | None = None
     true_car_start_latlon: tuple[float, float] | None = None
     true_vehicle_starts: dict | None = None
+    vehicle_length_m: dict | None = None
 
     # --- shared video folder paths ------------------------------------------
     def video_path(self, suffix: str) -> Path:
@@ -285,6 +292,7 @@ class SceneConfig:
             "true_impact_latlon": latlon(self.true_impact_latlon),
             "true_car_start_latlon": latlon(self.true_car_start_latlon),
             "true_vehicle_starts": self.true_vehicle_starts,
+            "vehicle_length_m": self.vehicle_length_m,
         }
 
     @classmethod
@@ -313,6 +321,7 @@ class SceneConfig:
             true_impact_latlon=latlon(data.get("true_impact_latlon")),
             true_car_start_latlon=latlon(data.get("true_car_start_latlon")),
             true_vehicle_starts=data.get("true_vehicle_starts"),
+            vehicle_length_m=data.get("vehicle_length_m"),
         )
 
 
@@ -357,6 +366,9 @@ PRE_IMPACT_MOTORCYCLE = SceneConfig(
     true_car_start_latlon=(23.026900, 120.249650),
     stop_vehicle="motorcycle",
     moving_vehicle="car",
+    # Known real lengths (diagnostic only) -- a sedan and a scooter -- so the local
+    # homography scale is quantified against them; does not change speeds.
+    vehicle_length_m={"car": 4.7, "motorcycle": 1.9},
 )
 
 
@@ -414,6 +426,9 @@ KEELUNG_XINWU_YIER = SceneConfig(
     },
     stop_vehicle="police_car",
     moving_vehicle="taxi",
+    # Known real lengths (diagnostic only): a saloon taxi and a police sedan. Used
+    # to print the local homography scale factor, not to alter speeds.
+    vehicle_length_m={"taxi": 4.7, "police_car": 4.8},
 )
 
 

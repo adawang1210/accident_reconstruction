@@ -34,10 +34,11 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from accident_reconstruction.auto_reconstruct import (
-    gcp_ground_span_m,
     load_anchors,
     project_metric,
     resolve_impact_frame,
+    speed_reliability,
+    speed_reliability_caption,
     windowed_motion,
 )
 from accident_reconstruction.birdseye_manual_annotation import (
@@ -60,6 +61,7 @@ from accident_reconstruction.calibrate_homography import (
     metric_to_latlon,
 )
 from accident_reconstruction.scene_config import SCENE
+from accident_reconstruction.time_axis import frame_seconds, load_frame_times
 
 
 def _vehicle_start_metric() -> dict[str, tuple[float, float]]:
@@ -250,7 +252,9 @@ def build_reconstruction() -> dict:
     paths = recognized_latlon()
     fps = float(SCENE.fps)
     impact_frame = resolve_impact_frame(SCENE)
-    motion = aligned_motion(paths, fps)  # speed consistent with these positions
+    times = load_frame_times(SCENE.prompt_tracks_csv)
+    # Speed consistent with these positions, timed by real PTS when available.
+    motion = aligned_motion(paths, fps, times)
     origin = ORIGIN_LATLON
 
     def to_xz(lat: float, lon: float) -> tuple[float, float]:
@@ -270,7 +274,7 @@ def build_reconstruction() -> dict:
             samples.append(
                 {
                     "frame": frame,
-                    "t_sec": round(frame / fps, 4),
+                    "t_sec": round(frame_seconds(times, frame, fps), 4),
                     "x_m": round(east, 3),
                     "z_m": round(north, 3),
                     "lat": round(lat, 7),
@@ -317,7 +321,7 @@ def build_reconstruction() -> dict:
         "impact": impact,
         "vehicles": vehicles,
         "roads": roads,
-        "speed_reliability": {"gcp_ground_span_m": gcp_ground_span_m()},
+        "speed_reliability": speed_reliability(),
     }
 
 
@@ -442,6 +446,9 @@ def write_recognized_figure(figure_path: Path | None = None) -> Path | None:
         16,
         (60, 60, 60),
     )
+    # Speed-trust caption (GCP span + trajectory hull coverage) in the corner so a
+    # compressed / extrapolated reading is visible on the figure itself.
+    _label(draw, (12, 34), speed_reliability_caption(), 14, (150, 90, 60))
 
     figure_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(str(figure_path))
@@ -502,9 +509,15 @@ def write_recognized_csv(csv_path: Path | None = None) -> Path | None:
     # change speeds, and impact detection needs the untranslated inter-vehicle
     # geometry (each vehicle is shifted independently to its own start).
     original = project_metric(load_anchors(SCENE.prompt_tracks_csv))
-    motion = {label: windowed_motion(track) for label, track in original.items()}
+    times = load_frame_times(SCENE.prompt_tracks_csv)
+    motion = {
+        label: windowed_motion(track, times, SCENE.fps)
+        for label, track in original.items()
+    }
     impact_frame = resolve_impact_frame(SCENE, original)
-    lines = [ROUTE_CSV_HEADER]
+    # Leading ``#`` comment carries the speed-reliability note; the web map skips
+    # ``#`` lines, so line 1 stays parseable as the column header for older readers.
+    lines = [f"# {speed_reliability_caption()}", ROUTE_CSV_HEADER]
     for label, track in _recognized_metric().items():
         for frame in sorted(track):
             ll = metric_to_latlon(track[frame])

@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from accident_reconstruction.calibrate_homography import (
     build_calibration,
+    load_distance_constraints,
     load_gcps,
     save_gcps,
 )
@@ -337,6 +338,7 @@ def get_gcps(video: str | None = None) -> dict:
     return {
         "scene": scene.name,
         "gcps": load_gcps(scene.gcp_store),
+        "distance_constraints": load_distance_constraints(scene.gcp_store),
         "center": center,
     }
 
@@ -409,10 +411,17 @@ def save_vehicles(request: VehiclesRequest) -> dict:
 
 
 class CalibrateRequest(BaseModel):
-    """Ground control points to save and calibrate from, for a clip's scene."""
+    """Ground control points to save and calibrate from, for a clip's scene.
+
+    ``distance_constraints`` are optional known-distance point pairs
+    (``[{pixel_a, pixel_b, distance_m}, ...]``, e.g. lane-dash ends 4 m apart) that
+    pin the homography's SCALE alongside the satellite GCPs. Omitted by older
+    clients, so it stays backward compatible.
+    """
 
     gcps: list[dict]
     video: str | None = None
+    distance_constraints: list[dict] | None = None
 
 
 def _video_image_size(video_relpath: str | None) -> tuple[int, int] | None:
@@ -431,19 +440,30 @@ def _video_image_size(video_relpath: str | None) -> tuple[int, int] | None:
 
 
 def _calibrate_scene(
-    scene: SceneConfig, gcps: list[dict], video_relpath: str | None = None
+    scene: SceneConfig,
+    gcps: list[dict],
+    video_relpath: str | None = None,
+    distance_constraints: list[dict] | None = None,
 ) -> dict | None:
-    """Persist ``gcps`` and (re)build + write the homography for ``scene``.
+    """Persist ``gcps`` (+ constraints) and (re)build + write the homography.
 
-    Shared by the calibrate endpoint and the download auto-calibration path.
+    Shared by the calibrate endpoint and the download auto-calibration path. When
+    ``distance_constraints`` is None the scene's stored constraints (if any) are
+    reused, so a plain GCP re-save does not silently drop them.
 
     Returns:
         The calibration dict, or None when there are fewer than 4 points.
     """
-    save_gcps(scene.gcp_store, gcps)
+    if distance_constraints is None:
+        distance_constraints = load_distance_constraints(scene.gcp_store)
+    save_gcps(scene.gcp_store, gcps, distance_constraints)
     if len(gcps) < 4:
         return None
-    calibration = build_calibration(gcps, image_size=_video_image_size(video_relpath))
+    calibration = build_calibration(
+        gcps,
+        image_size=_video_image_size(video_relpath),
+        distance_constraints=distance_constraints,
+    )
     scene.calibration_path.parent.mkdir(parents=True, exist_ok=True)
     scene.calibration_path.write_text(
         json.dumps(calibration, indent=2, ensure_ascii=False)
@@ -458,7 +478,9 @@ def calibrate(request: CalibrateRequest) -> dict:
         scene = _scene_for_video(request.video) if request.video else SCENE
         if scene is None:
             return {"ok": False, "error": "此影片沒有對應的場景設定（scene_config）"}
-        calibration = _calibrate_scene(scene, request.gcps, request.video)
+        calibration = _calibrate_scene(
+            scene, request.gcps, request.video, request.distance_constraints
+        )
         if calibration is None:
             msg = f"需要 >= 4 點，目前 {len(request.gcps)}（已存）"
             return {"ok": False, "error": msg}

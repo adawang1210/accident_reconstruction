@@ -35,6 +35,7 @@ from accident_reconstruction.manual_pre_impact_motorcycle_annotation import (
 )
 from accident_reconstruction.motion import windowed_speed
 from accident_reconstruction.scene_config import SCENE
+from accident_reconstruction.time_axis import load_frame_times
 
 _PREFIX = SCENE.artifact_dir.parent / SCENE.name
 BIRDSEYE_TARGET_VIDEO_PATH = SCENE.video_path("birdseye_split_slow_2x")
@@ -803,7 +804,9 @@ def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 def aligned_motion(
-    aligned: dict[str, dict[int, tuple[float, float]]], fps: float
+    aligned: dict[str, dict[int, tuple[float, float]]],
+    fps: float,
+    times: dict[int, float] | None = None,
 ) -> dict[str, dict[int, tuple[float, float]]]:
     """Per-frame ``(cumulative_m, speed_kmh)`` from each vehicle's aligned lat/lon.
 
@@ -816,7 +819,10 @@ def aligned_motion(
 
     Args:
         aligned: Per-vehicle aligned ``(lat, lon)`` by frame (falsy entries skipped).
-        fps: Source frames per second.
+        fps: Source frames per second (used when ``times`` is absent).
+        times: Optional ``{frame: t_sec}`` real per-frame timestamps; when given,
+            elapsed time comes from them instead of ``frame / fps`` (defends
+            against variable-frame-rate clips).
 
     Returns:
         ``{label: {frame: (cumulative_m, speed_kmh)}}``.
@@ -825,7 +831,7 @@ def aligned_motion(
     for label, by_frame in aligned.items():
         # Drop falsy (missing) aligned points before windowing, as before.
         track = {frame: by_frame[frame] for frame in by_frame if by_frame[frame]}
-        out[label] = windowed_speed(track, fps, _haversine_m)
+        out[label] = windowed_speed(track, fps, _haversine_m, times)
     return out
 
 
@@ -870,7 +876,9 @@ def write_map_figure(data=None, figure_path: Path = MAP_FIGURE_PATH) -> None:
         return
     _, metric, impact_frame = data if data is not None else collect_vehicle_motion()
     aligned = _aligned_latlon(metric, impact_frame)
-    disp_motion = aligned_motion(aligned, SCENE.fps)
+    disp_motion = aligned_motion(
+        aligned, SCENE.fps, load_frame_times(SCENE.prompt_tracks_csv)
+    )
 
     clat, clon = TRUE_IMPACT_LATLON
     scale, size = 13.0, 880
@@ -962,7 +970,9 @@ def write_csv(data=None, csv_path: Path = ROUTE_CSV_PATH) -> None:
         return
     _, metric, impact_frame = data if data is not None else collect_vehicle_motion()
     aligned = _aligned_latlon(metric, impact_frame)
-    disp_motion = aligned_motion(aligned, SCENE.fps)
+    disp_motion = aligned_motion(
+        aligned, SCENE.fps, load_frame_times(SCENE.prompt_tracks_csv)
+    )
     lines = [ROUTE_CSV_HEADER]
     for label in aligned:
         for frame in sorted(aligned[label]):

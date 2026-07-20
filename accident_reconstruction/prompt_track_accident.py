@@ -39,6 +39,11 @@ from ultralytics.models.sam import SAM2VideoPredictor
 
 from accident_reconstruction.ffmpeg_util import find_ffmpeg
 from accident_reconstruction.scene_config import SCENE
+from accident_reconstruction.time_axis import (
+    frame_time,
+    probe_pts_times,
+    time_axis_warning,
+)
 
 
 def ensure_readable_mp4(path: str) -> None:
@@ -792,6 +797,18 @@ def main(
             ),
         )
 
+    # Real per-frame timestamps (PTS) so speed uses actual elapsed time, not the
+    # nominal frame/fps (defends against VFR / dropped-frame YouTube & CCTV clips).
+    # Falls back to frame/fps when ffprobe is unavailable; warn if the axis is
+    # uneven (variable frame rate) so downstream speeds are read with suspicion.
+    pts_times = probe_pts_times(source_video_path)
+    if pts_times is None:
+        print("(ffprobe unavailable; using nominal frame/fps for t_sec)")
+    else:
+        warning = time_axis_warning(pts_times[start_frame : end_frame + 1])
+        if warning is not None:
+            print(warning)
+
     # Composite render over the full window, overlaying whichever vehicles appear.
     capture = cv2.VideoCapture(source_video_path)
     fps = capture.get(cv2.CAP_PROP_FPS) or 25.0
@@ -808,6 +825,7 @@ def main(
             writer = cv2.VideoWriter(
                 target_video_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
             )
+        t_sec = frame_time(pts_times, frame_index, fps)
         for name in names:
             record = per_vehicle[name].get(frame_index)
             if record is None:
@@ -834,7 +852,7 @@ def main(
                 and frame_index > trace_cut
             ):
                 trace[name].append(anchor)  # stop the struck vehicle's line at the flip
-            rows.append([frame_index, name, *box, *anchor])
+            rows.append([frame_index, name, *box, *anchor, round(t_sec, 6)])
         for name in names:
             if len(trace[name]) >= 2:
                 cv2.polylines(
@@ -853,7 +871,17 @@ def main(
     with open(tracks_csv_path, "w", newline="") as handle:
         csv_writer = csv.writer(handle)
         csv_writer.writerow(
-            ["frame", "vehicle", "x1", "y1", "x2", "y2", "anchor_x", "anchor_y"]
+            [
+                "frame",
+                "vehicle",
+                "x1",
+                "y1",
+                "x2",
+                "y2",
+                "anchor_x",
+                "anchor_y",
+                "t_sec",
+            ]
         )
         csv_writer.writerows(rows)
 
