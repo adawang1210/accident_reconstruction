@@ -8,6 +8,7 @@ import { usePlayback } from "./playback/store";
 import { trackEnd } from "./scene/sampleTrack";
 import { HAS_SPLAT } from "./scene/SplatScene";
 import { GOOGLE_TILES_KEY } from "./scene/GoogleTiles";
+import { BASEMAP } from "./scene/Scene";
 
 export function App() {
   const { data, error } = useReconstruction();
@@ -38,8 +39,13 @@ export function App() {
   if (!data) return <div className="fatal">載入中…</div>;
 
   const span = data.speed_reliability?.gcp_ground_span_m;
+  // Only Google 3D Tiles (ECEF scale) needs the huge far plane + log depth
+  // buffer; splat and the schematic OSM basemap are local-metre scenes. Must
+  // mirror Scene.tsx's tiles gate (splat overrides, and BASEMAP must be "tiles").
   const useTiles =
-    !HAS_SPLAT && Boolean(GOOGLE_TILES_KEY && data.origin_latlon);
+    !HAS_SPLAT &&
+    BASEMAP === "tiles" &&
+    Boolean(GOOGLE_TILES_KEY && data.origin_latlon);
   return (
     <>
       <div className="hud">
