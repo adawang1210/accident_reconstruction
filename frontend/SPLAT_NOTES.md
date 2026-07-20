@@ -68,6 +68,31 @@ viewer（mkkellogg）支援：**`.ply` / `.splat` / `.ksplat` / `.spz`**。
 - `.ksplat`：mkkellogg 自家壓縮格式（可用其工具轉，載入最快）。
 - `.spz`：Niantic 開源壓縮格式，比 `.splat` 小 1/2~1/5，**行動裝置友善**（建議首選）。
 
+### 2.4 本機開源 repo（照片 → splat），含 Mac 可跑性
+
+§2.2 列的多是雲端 App。若要**自架／可商用／離線**，下面是「餵一資料夾重疊照片 → 自動算
+相機位姿（SfM）→ 訓練成 splat → 匯出 `.ply`/`.splat`」的開源 repo。星數／授權為 GitHub API
+實查（2026-07）。**重點：本機是 macOS，CUDA 類跑不動，要看「Mac 可跑」欄。**
+
+| repo                                                                                          |     ★ | 語言        | 授權           | Mac 本機可跑？                                                                               |
+| --------------------------------------------------------------------------------------------- | ----: | ----------- | -------------- | -------------------------------------------------------------------------------------------- |
+| [`ArthurBrussee/brush`](https://github.com/ArthurBrussee/brush)                               |  4775 | Rust/WGPU   | **Apache-2.0** | ✅ **可**（WGPU，連瀏覽器都能訓練，免 NVIDIA）—— **首選**                                    |
+| [`pierotofy/OpenSplat`](https://github.com/pierotofy/OpenSplat)                               |  2076 | C++         | AGPL-3.0       | ✅ 可（Metal/CPU），但 AGPL 強 copyleft，商用要小心                                          |
+| [`nerfstudio-project/nerfstudio`](https://github.com/nerfstudio-project/nerfstudio)           | 11742 | Python      | Apache-2.0     | ⚠️ 需 NVIDIA CUDA → 本機不行，要雲端 GPU（`ns-process-data`＋`ns-train splatfacto`，最完整） |
+| [`nerfstudio-project/gsplat`](https://github.com/nerfstudio-project/gsplat)                   |  5301 | Python/CUDA | Apache-2.0     | ⚠️ 同上（rasterizer 後端）                                                                   |
+| [`graphdeco-inria/gaussian-splatting`](https://github.com/graphdeco-inria/gaussian-splatting) | 22498 | Python/CUDA | **非商業**     | ⚠️ 參考實作；需 CUDA 且授權禁商用                                                            |
+| [`NVlabs/instant-ngp`](https://github.com/NVlabs/instant-ngp)                                 | ~16k¹ | C++/CUDA    | 非商業         | ⚠️ NeRF（非 splat）、需 CUDA                                                                 |
+
+¹ rate-limited 未即時查證，約略值。
+
+- **Mac 本機 → `Brush`**（Apache-2.0、跑得動、可商用）或 `OpenSplat`（注意 AGPL）。
+- **CUDA 類** 要租雲端 NVIDIA GPU 或用其 Colab。
+- 完全不寫 code → 回 §2.2 的雲端 App（Luma/Polycam/Postshot）。
+- **鐵律（呼應 §1）**：照片必須是**真實、多視角、繞著拍**那個路口的影像。這些工具只忠實
+    重建你餵進去的照片，**不會無中生有變清晰**；對 Google 截圖再丟進去＝沒用。
+- 產出 `.ply`/`.splat`/`.spz` → 放 `frontend/public/` → 設 `VITE_SPLAT_URL`（§4）；尺度／朝向用
+    [`accident_reconstruction.splat_georef`](../accident_reconstruction/splat_georef.py) 對位（§9.2）。
+
 ---
 
 ## 3. 已實作的 viewer
@@ -193,6 +218,67 @@ Gemini 的建議值得採用：用 drei `<TransformControls>` 或 `leva` GUI 綁
 - **反光烤死**：積水/玻璃的反光被烤進特定視角；動態車開過去不會正確遮擋倒影。
 - **splat ↔ Google tiles 接縫**：兩者深度遮擋很難無縫，邊緣通常要加 `fog` 過渡。
 - **Postshot** 2026 內建「Dynamic Object Removal」，可自動剔除跨影格移動特徵（減少烤入車人）。
+
+---
+
+## 9. 六方 AI repo 普查 + GitHub API 實查（2026-07）
+
+承 §8，用一份英文 prompt 請 6 個 AI（Claude / GPT / Manus / DeepSeek / Gemini ＋本機）
+去找「3DGS 場景渲染 × 車禍／軌跡」相關 GitHub repo。**重點：各家自報的星數／日期／
+授權大量錯誤**（Manus 把 `splatalign` 星數灌水 8 倍、Gemini 用 Google 轉址 URL ＝沒真的開
+過、DeepSeek 把 DrivingGaussian 擁有者寫錯）。下表為 **GitHub API 實查**（2026-07）後的真值，
+**以此為準，不要信各報告的數字**：
+
+| repo                                 |    ★ | last push | license    | 用途／註記                                                |
+| ------------------------------------ | ---: | --------- | ---------- | --------------------------------------------------------- |
+| `playcanvas/supersplat`              | 9386 | 2026-06   | MIT        | ✅ 清雜物／設初始變換的編輯器                             |
+| `nerfstudio-project/gsplat`          | 5301 | 2026-06   | Apache-2.0 | 訓練後端（CUDA）                                          |
+| `sparkjsdev/spark`                   | 3344 | 2026-06   | **MIT**    | ✅ **viewer 遷移首選**：splat+mesh 融合、多 splat 排序    |
+| `antimatter15/splat`                 | 3028 | 2025-11   | MIT        | 參考用                                                    |
+| `mkkellogg/GaussianSplats3D`         | 2797 | 2025-10   | MIT        | 目前用的，維護變慢                                        |
+| `ziyc/drivestudio`（OmniRe）         | 1217 | 2025-08   | **MIT**    | ✅ **唯一寬鬆授權**的動態駕駛框架；靜態背景＋每車剛體變換 |
+| `zju3dv/street_gaussians`            | 1360 | 2025-07   | 自訂／NC   | INRIA 非商業，鑑識工具不能用                              |
+| `nnanhuang/S3Gaussian`               |  543 | 2026-01   | 自訂／NC   | 同上                                                      |
+| `OpenDriveLab/WorldEngine`           |  428 | 2026-06   | Apache-2.0 | 新、活躍，3DGS 互動模擬                                   |
+| `VDIGPKU/DrivingGaussian`            |  401 | 2024-07   | **無**     | 停滯、預設保留所有權利                                    |
+| `terminusfilms/splatalign`           |   17 | 2026-01   | **MIT**    | ✅ ICP 對齊 → 4×4 矩陣（對位可參考且可商用）              |
+| `opengeos/maplibre-gl-splat`         |   29 | 2026-06   | MIT        | 把 splat 放到真實地圖座標                                 |
+| `manudelu/georeferenced_gsplat`      |    6 | 2025-10   | **無**     | GPS-EXIF→COLMAP→ENU→Cesium；只能讀方法、重寫              |
+| `Chenyanzhan/Traffic-accident-3D-GS` |    3 | 2024-08   | 無         | ⚠️ CARLA 模擬、非真實影片                                 |
+| `DragosChileban/CrashSplat`          |    2 | 2025-10   | 無         | 單車損傷分割，非場景重建                                  |
+| `Aaeshah/MOD-Forensic-Scenes`        |    0 | 2026-06   | 無         | 幾天前建、近乎空殼                                        |
+
+（授權「無」＝repo 沒有 LICENSE 檔＝預設保留所有權利，鑑識產品**不能**直接用。）
+
+### 9.1 分類結論
+
+- **Web viewer**：共識遷移到 **Spark**（MIT、活躍、原生 mesh+splat 融合）；mkkellogg 仍可用
+    但變慢。
+- **動態駕駛（架構參考）**：**DriveStudio/OmniRe**（MIT）是唯一能商用又可讀的；其餘
+    street_gaussians / S3Gaussian / DeSiRe-GS 全是 INRIA 非商業或無授權。
+- **事故／鑑識**：六方一致「幾乎空白」，實查確認 —— 三個「相關」repo 不是 CARLA 模擬、
+    就是單車損傷、或 0★ 空殼。**用真實車禍影片＋3DGS 做鑑識沒有可抄的**＝這是本專案的原創面。
+- **地理對位（最大缺口）**：沒有生產級工具。可參考 `splatalign`（MIT、ICP→矩陣）、
+    `georeferenced_gsplat`（只能讀方法）；`GeoRefGS` 只有論文無 code。**業界共識做法＝自己用
+    Umeyama / Procrustes 對 GCP 解相似變換。**
+- **軌跡疊加**：無專門 repo —— 它就是「在同一個 R3F 場景放 Three.js 線段／車模型」，現有技術棧
+    已能做。
+
+### 9.2 已實作：`accident_reconstruction.splat_georef`（補上「最大缺口」）
+
+把 §5 的「盲調 .env 數字」換成閉式解。在 viewer 讀出幾個地標的 splat 座標，配上它們在
+`reconstruction.json` 已知的公尺座標（≥ 3 個不共線），跑：
+
+```bash
+.venv/bin/python -m accident_reconstruction.splat_georef pairs.json
+```
+
+`pairs.json` 格式：`{"pairs":[{"splat":[x,y,z],"scene":[x,y,z]}, ...]}`
+（scene 為公尺、x=東、z=−北、y=上）。輸出可直接貼進 `frontend/.env` 的 `VITE_SPLAT_*`
+（Umeyama 相似變換 → Three.js Euler `'XYZ'`、TRS 順序，與 `SplatScene.tsx` 一致），並回報擬合
+RMSE（> 0.5 m 會警告對應點可能讀錯／共線）。對應實作見
+[`accident_reconstruction/splat_georef.py`](../accident_reconstruction/splat_georef.py)、測試
+`tests/test_splat_georef.py`。
 
 ---
 
