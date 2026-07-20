@@ -13,4 +13,25 @@ export default defineConfig({
       "/media": { target: "http://127.0.0.1:8000", changeOrigin: true },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Split the large, stable 3D libs (three + @react-three + tiles + splat,
+        // ~1 MB) into their own chunk so the browser caches them across app
+        // deploys instead of re-downloading the whole ~1.3 MB bundle on every
+        // code change. Kept to a single 3D group (not react/vendor sub-splits)
+        // to avoid circular chunk references.
+        manualChunks(id) {
+          if (
+            id.includes("node_modules") &&
+            (id.includes("three") ||
+              id.includes("3d-tiles-renderer") ||
+              id.includes("gaussian-splats"))
+          )
+            return "vendor-three";
+          return undefined;
+        },
+      },
+    },
+  },
 });
