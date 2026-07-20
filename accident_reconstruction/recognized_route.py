@@ -33,22 +33,25 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from accident_reconstruction.auto_reconstruct import (
-    detect_impact,
     gcp_ground_span_m,
     load_anchors,
     project_metric,
+    resolve_impact_frame,
     windowed_motion,
 )
 from accident_reconstruction.birdseye_manual_annotation import (
     ORIGIN_LATLON,
     ROAD_CENTERLINES,
     ROAD_NAMES,
+    ROUTE_CSV_HEADER,
     TRUE_IMPACT_LATLON,
     USING_GPS_CALIBRATION,
     VEHICLE_DISPLAY,
+    MapProjection,
     _kml_linestring,
     _label,
     aligned_motion,
+    route_csv_row,
 )
 from accident_reconstruction.calibrate_homography import (
     METERS_PER_DEG_LAT,
@@ -240,11 +243,7 @@ def build_reconstruction() -> dict:
         }
     paths = recognized_latlon()
     fps = float(SCENE.fps)
-    impact_frame = SCENE.impact_frame_override
-    if impact_frame is None:
-        impact_frame = detect_impact(
-            project_metric(load_anchors(SCENE.prompt_tracks_csv))
-        )
+    impact_frame = resolve_impact_frame(SCENE)
     motion = aligned_motion(paths, fps)  # speed consistent with these positions
     origin = ORIGIN_LATLON
 
@@ -372,10 +371,9 @@ def write_recognized_figure(figure_path: Path | None = None) -> Path | None:
     cx = (max(xs) + min(xs)) / 2
     cy = (max(ys) + min(ys)) / 2
 
-    def to_px(latlon: tuple[float, float]) -> tuple[float, float]:
-        x = (latlon[1] - clon) * m_lon
-        y = (latlon[0] - clat) * m_lat
-        return (size / 2 + (x - cx) * scale, size / 2 - (y - cy) * scale)
+    to_px = MapProjection(
+        clat=clat, clon=clon, m_lon=m_lon, scale=scale, size=size, cx=cx, cy=cy
+    ).to_px
 
     image = Image.new("RGB", (size, size), (245, 246, 248))
     draw = ImageDraw.Draw(image)
@@ -499,20 +497,15 @@ def write_recognized_csv(csv_path: Path | None = None) -> Path | None:
     # geometry (each vehicle is shifted independently to its own start).
     original = project_metric(load_anchors(SCENE.prompt_tracks_csv))
     motion = {label: windowed_motion(track) for label, track in original.items()}
-    impact_frame = SCENE.impact_frame_override
-    if impact_frame is None:
-        impact_frame = detect_impact(original)
-    lines = ["frame,vehicle,lat,lon,speed_kmh,is_impact"]
+    impact_frame = resolve_impact_frame(SCENE, original)
+    lines = [ROUTE_CSV_HEADER]
     for label, track in _recognized_metric().items():
         for frame in sorted(track):
             ll = metric_to_latlon(track[frame])
             if ll is None:
                 continue
             speed = motion[label][frame][1] if frame in motion.get(label, {}) else 0.0
-            lines.append(
-                f"{frame},{label},{ll[0]:.7f},{ll[1]:.7f},{speed:.1f},"
-                f"{int(frame == impact_frame)}"
-            )
+            lines.append(route_csv_row(frame, label, ll[0], ll[1], speed, impact_frame))
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return csv_path

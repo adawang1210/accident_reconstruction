@@ -17,7 +17,7 @@ from __future__ import annotations
 import csv
 import json
 import math
-from collections import defaultdict, deque
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +31,8 @@ from accident_reconstruction.calibrate_homography import (
     VIEW_TRANSFORMER,
     undistort_to_normalized,
 )
-from accident_reconstruction.scene_config import SCENE
+from accident_reconstruction.motion import euclidean, windowed_speed
+from accident_reconstruction.scene_config import SCENE, SceneConfig
 
 PROMPT_TRACKS_CSV = SCENE.prompt_tracks_csv
 
@@ -53,7 +54,6 @@ AUTO_FIGURE_PATH = SCENE.out_figure
 AUTO_CSV_PATH = SCENE.out_csv
 
 FPS = SCENE.fps
-SPEED_WINDOW_SECONDS = 0.6
 
 
 def load_anchors(csv_path: Path) -> dict[str, dict[int, tuple[float, float]]]:
@@ -176,29 +176,7 @@ def windowed_motion(
     Returns:
         ``(cumulative_m, speed_kmh)`` by frame.
     """
-    motion: dict[int, tuple[float, float]] = {}
-    samples: deque[tuple[int, tuple[float, float]]] = deque()
-    cumulative = 0.0
-    previous: tuple[float, float] | None = None
-    for frame in sorted(track):
-        point = track[frame]
-        if previous is not None:
-            cumulative += math.hypot(point[0] - previous[0], point[1] - previous[1])
-        previous = point
-        samples.append((frame, point))
-        while len(samples) >= 2 and frame - samples[0][0] > SPEED_WINDOW_SECONDS * FPS:
-            samples.popleft()
-        speed = 0.0
-        if len(samples) >= 2:
-            first_frame, first_point = samples[0]
-            elapsed = (frame - first_frame) / FPS
-            if elapsed > 0:
-                distance = math.hypot(
-                    point[0] - first_point[0], point[1] - first_point[1]
-                )
-                speed = distance / elapsed * 3.6
-        motion[frame] = (cumulative, speed)
-    return motion
+    return windowed_speed(track, FPS, euclidean)
 
 
 # Two vehicles within this metric distance are treated as in contact. Note this
@@ -286,6 +264,33 @@ def detect_impact(metric: dict[str, dict[int, tuple[float, float]]]) -> int | No
             if best is None or min_dist < best[1]:
                 best = (impact_frame, min_dist)
     return None if best is None else best[0]
+
+
+def resolve_impact_frame(
+    scene: SceneConfig,
+    metric: dict[str, dict[int, tuple[float, float]]] | None = None,
+) -> int | None:
+    """The scene's impact frame: the UI override if set, else auto-detected.
+
+    Single source of truth for ``override or detect_impact(...)``, which four
+    call sites previously repeated.
+
+    Args:
+        scene: The active scene (its ``impact_frame_override`` wins when set).
+        metric: Per-vehicle metric positions to detect from. Defaults to the
+            scene's prompt-tracks projection; pass an already-computed metric
+            (e.g. the one ``build_data`` just built, or in-memory tracking
+            anchors) to avoid re-projecting.
+
+    Returns:
+        The impact frame index, or None when neither an override nor a
+        two-vehicle contact is available.
+    """
+    if scene.impact_frame_override is not None:
+        return scene.impact_frame_override
+    if metric is None:
+        metric = project_metric(load_anchors(scene.prompt_tracks_csv))
+    return detect_impact(metric)
 
 
 def settle_frame(
@@ -392,9 +397,7 @@ def build_data(csv_path: Path = PROMPT_TRACKS_CSV):
     anchors = load_anchors(csv_path)
     metric = project_metric(anchors)
     # The UI can pin the impact frame (overrides.json); else auto-detect.
-    impact_frame = SCENE.impact_frame_override
-    if impact_frame is None:
-        impact_frame = detect_impact(metric)
+    impact_frame = resolve_impact_frame(SCENE, metric)
 
     # Cut each vehicle's trajectory once it comes to rest after the collision:
     # the line stops where speed stays below ``min_traj_speed`` (post-stop anchor

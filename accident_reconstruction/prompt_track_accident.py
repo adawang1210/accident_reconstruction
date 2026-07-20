@@ -759,17 +759,15 @@ def main(
     # import: it pulls the geo writers, unneeded for a plain track run otherwise).
     if SCENE.truncate_boxes_at_impact:
         from accident_reconstruction.auto_reconstruct import (
-            detect_impact,
             project_metric,
+            resolve_impact_frame,
         )
 
         anchors = {
             name: {frame: record[1] for frame, record in records.items()}
             for name, records in per_vehicle.items()
         }
-        impact_frame = SCENE.impact_frame_override
-        if impact_frame is None:
-            impact_frame = detect_impact(project_metric(anchors))
+        impact_frame = resolve_impact_frame(SCENE, project_metric(anchors))
         if impact_frame is not None:
             for name, records in per_vehicle.items():
                 per_vehicle[name] = {

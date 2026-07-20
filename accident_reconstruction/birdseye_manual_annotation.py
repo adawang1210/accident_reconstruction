@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -32,6 +33,7 @@ from accident_reconstruction.manual_pre_impact_motorcycle_annotation import (
     metric_to_panel,
     update_track_speed,
 )
+from accident_reconstruction.motion import windowed_speed
 from accident_reconstruction.scene_config import SCENE
 
 _PREFIX = SCENE.artifact_dir.parent / SCENE.name
@@ -790,11 +792,6 @@ def _aligned_latlon(
     return out
 
 
-# Speed window matching auto_reconstruct.windowed_motion (smooths single-frame
-# jitter over ~0.6 s).
-SPEED_WINDOW_SECONDS = 0.6
-
-
 def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
     """Great-circle distance in metres between two ``(lat, lon)`` points."""
     radius = EARTH_RADIUS_M
@@ -826,30 +823,38 @@ def aligned_motion(
     """
     out: dict[str, dict[int, tuple[float, float]]] = {}
     for label, by_frame in aligned.items():
-        frames = [f for f in sorted(by_frame) if by_frame[f]]
-        motion: dict[int, tuple[float, float]] = {}
-        window: list[tuple[int, tuple[float, float]]] = []
-        cumulative = 0.0
-        previous: tuple[float, float] | None = None
-        for frame in frames:
-            point = by_frame[frame]
-            if previous is not None:
-                cumulative += _haversine_m(previous, point)
-            previous = point
-            window.append((frame, point))
-            while (
-                len(window) >= 2 and frame - window[0][0] > SPEED_WINDOW_SECONDS * fps
-            ):
-                window.pop(0)
-            speed = 0.0
-            if len(window) >= 2:
-                first_frame, first_point = window[0]
-                elapsed = (frame - first_frame) / fps
-                if elapsed > 0:
-                    speed = _haversine_m(first_point, point) / elapsed * 3.6
-            motion[frame] = (cumulative, speed)
-        out[label] = motion
+        # Drop falsy (missing) aligned points before windowing, as before.
+        track = {frame: by_frame[frame] for frame in by_frame if by_frame[frame]}
+        out[label] = windowed_speed(track, fps, _haversine_m)
     return out
+
+
+@dataclass(frozen=True)
+class MapProjection:
+    """Project ``(lat, lon)`` to canvas pixels for the north-up map figures.
+
+    Both figure writers map lat/lon to metres about a centre, then to pixels with
+    the y-axis flipped; they differ only in parameters -- birdseye uses a fixed
+    ``scale`` centred on the impact point, the recognised figure auto-zooms
+    (dynamic ``scale`` + bbox recentre via ``cx``/``cy``). This holds that one
+    mapping so the convention lives in a single place.
+    """
+
+    clat: float
+    clon: float
+    m_lon: float  # metres per degree of longitude at the reference latitude
+    scale: float  # pixels per metre
+    size: int  # square canvas edge (px)
+    cx: float = 0.0  # metric-space centre offset, east (0 = centre on clon)
+    cy: float = 0.0  # metric-space centre offset, north (0 = centre on clat)
+
+    def to_px(self, latlon: tuple[float, float]) -> tuple[float, float]:
+        x = (latlon[1] - self.clon) * self.m_lon
+        y = (latlon[0] - self.clat) * METERS_PER_DEG_LAT
+        return (
+            self.size / 2 + (x - self.cx) * self.scale,
+            self.size / 2 - (y - self.cy) * self.scale,
+        )
 
 
 def write_map_figure(data=None, figure_path: Path = MAP_FIGURE_PATH) -> None:
@@ -868,13 +873,11 @@ def write_map_figure(data=None, figure_path: Path = MAP_FIGURE_PATH) -> None:
     disp_motion = aligned_motion(aligned, SCENE.fps)
 
     clat, clon = TRUE_IMPACT_LATLON
-    scale, size, half = 13.0, 880, 880 / 2
+    scale, size = 13.0, 880
     m_lon = METERS_PER_DEG_LAT * math.cos(math.radians(clat))
-
-    def to_px(latlon: tuple[float, float]) -> tuple[float, float]:
-        x = (latlon[1] - clon) * m_lon
-        y = (latlon[0] - clat) * METERS_PER_DEG_LAT
-        return (half + x * scale, half - y * scale)
+    to_px = MapProjection(
+        clat=clat, clon=clon, m_lon=m_lon, scale=scale, size=size
+    ).to_px
 
     image = Image.new("RGB", (size, size), (245, 246, 248))
     draw = ImageDraw.Draw(image)
@@ -932,6 +935,21 @@ def write_map_figure(data=None, figure_path: Path = MAP_FIGURE_PATH) -> None:
     image.save(str(figure_path))
 
 
+# The route-CSV schema, shared by this aligned writer and the recognised writer
+# (recognized_route) so the interactive map + metric cards read one format and
+# the two can't silently drift apart.
+ROUTE_CSV_HEADER = "frame,vehicle,lat,lon,speed_kmh,is_impact"
+
+
+def route_csv_row(
+    frame: int, label: str, lat: float, lon: float, speed: float, impact_frame
+) -> str:
+    """One route-CSV row in the shared schema (:data:`ROUTE_CSV_HEADER`)."""
+    return (
+        f"{frame},{label},{lat:.7f},{lon:.7f},{speed:.1f},{int(frame == impact_frame)}"
+    )
+
+
 def write_csv(data=None, csv_path: Path = ROUTE_CSV_PATH) -> None:
     """Write the aligned per-frame trajectory (lat/lon + speed) as CSV.
 
@@ -945,7 +963,7 @@ def write_csv(data=None, csv_path: Path = ROUTE_CSV_PATH) -> None:
     _, metric, impact_frame = data if data is not None else collect_vehicle_motion()
     aligned = _aligned_latlon(metric, impact_frame)
     disp_motion = aligned_motion(aligned, SCENE.fps)
-    lines = ["frame,vehicle,lat,lon,speed_kmh,is_impact"]
+    lines = [ROUTE_CSV_HEADER]
     for label in aligned:
         for frame in sorted(aligned[label]):
             lat, lon = aligned[label][frame]
@@ -954,10 +972,7 @@ def write_csv(data=None, csv_path: Path = ROUTE_CSV_PATH) -> None:
                 if frame in disp_motion.get(label, {})
                 else 0.0
             )
-            lines.append(
-                f"{frame},{label},{lat:.7f},{lon:.7f},{speed:.1f},"
-                f"{int(frame == impact_frame)}"
-            )
+            lines.append(route_csv_row(frame, label, lat, lon, speed, impact_frame))
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
