@@ -57,7 +57,7 @@ RANSAC_THRESHOLD_M = 2.0
 MIN_GCP_SPAN_M = 15.0
 
 # Mean Earth radius (meters); good enough for the ~10 m span of these scenes.
-_EARTH_RADIUS_M = 6_371_000.0
+EARTH_RADIUS_M = 6_371_000.0
 
 
 def latlon_to_local_meters(
@@ -88,8 +88,8 @@ def latlon_to_local_meters(
     lon = np.radians(latlon[:, 1])
     origin_lat_rad = math.radians(origin_lat)
     origin_lon_rad = math.radians(origin_lon)
-    east = (lon - origin_lon_rad) * math.cos(origin_lat_rad) * _EARTH_RADIUS_M
-    north = (lat - origin_lat_rad) * _EARTH_RADIUS_M
+    east = (lon - origin_lon_rad) * math.cos(origin_lat_rad) * EARTH_RADIUS_M
+    north = (lat - origin_lat_rad) * EARTH_RADIUS_M
     return np.column_stack([east, north]).astype(np.float32)
 
 
@@ -390,7 +390,9 @@ def build_calibration(
 # ViewTransformer – pixel → metric ground-plane projection
 # ---------------------------------------------------------------------------
 
-_METERS_PER_DEG_LAT = math.radians(1.0) * 6_371_000.0
+# Metres per degree of latitude (spherical Earth). Shared with the geo writers
+# so the 111_195 magic number is defined exactly once.
+METERS_PER_DEG_LAT = math.radians(1.0) * EARTH_RADIUS_M
 
 
 class ViewTransformer:
@@ -505,9 +507,9 @@ def metric_to_latlon(point: tuple[float, float]) -> tuple[float, float] | None:
         return None
     east_m, north_m = point
     origin_lat, origin_lon = ORIGIN_LATLON
-    lat = origin_lat + north_m / _METERS_PER_DEG_LAT
+    lat = origin_lat + north_m / METERS_PER_DEG_LAT
     lon = origin_lon + east_m / (
-        _METERS_PER_DEG_LAT * math.cos(math.radians(origin_lat))
+        METERS_PER_DEG_LAT * math.cos(math.radians(origin_lat))
     )
     return (lat, lon)
 

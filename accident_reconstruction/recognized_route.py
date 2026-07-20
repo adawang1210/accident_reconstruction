@@ -51,6 +51,7 @@ from accident_reconstruction.birdseye_manual_annotation import (
     aligned_motion,
 )
 from accident_reconstruction.calibrate_homography import (
+    METERS_PER_DEG_LAT,
     latlon_to_local_meters,
     metric_to_latlon,
 )
@@ -360,8 +361,8 @@ def write_recognized_figure(figure_path: Path | None = None) -> Path | None:
     else:
         clat, clon = sum(lats) / len(lats), sum(lons) / len(lons)
     mid_lat = sum(lats) / len(lats)
-    m_lat = 111195.0
-    m_lon = 111195.0 * math.cos(math.radians(mid_lat))
+    m_lat = METERS_PER_DEG_LAT
+    m_lon = METERS_PER_DEG_LAT * math.cos(math.radians(mid_lat))
 
     xs = [(lon - clon) * m_lon for lon in lons]
     ys = [(lat - clat) * m_lat for lat in lats]
@@ -526,8 +527,10 @@ def main() -> None:
     for label, track in paths.items():
         frames = sorted(track)
         ll0, ll1 = track[frames[0]], track[frames[-1]]
-        m_lon = 111195.0 * math.cos(math.radians(ll0[0]))
-        travelled = math.hypot((ll1[1] - ll0[1]) * m_lon, (ll1[0] - ll0[0]) * 111195.0)
+        m_lon = METERS_PER_DEG_LAT * math.cos(math.radians(ll0[0]))
+        travelled = math.hypot(
+            (ll1[1] - ll0[1]) * m_lon, (ll1[0] - ll0[0]) * METERS_PER_DEG_LAT
+        )
         print(
             f"  {label}: {len(frames)} frames, "
             f"recognised straight extent ~{travelled:.1f} m"

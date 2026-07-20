@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import csv
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,21 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ultralytics.models.sam import SAM2VideoPredictor
 
+from accident_reconstruction.ffmpeg_util import find_ffmpeg
 from accident_reconstruction.scene_config import SCENE
-
-
-def _find_ffmpeg() -> str | None:
-    """Locate an ffmpeg binary (PATH first, then common install locations)."""
-    on_path = shutil.which("ffmpeg")
-    if on_path:
-        return on_path
-    candidates = [
-        "/opt/homebrew/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
-        str(Path.home() / "miniconda3/bin/ffmpeg"),
-        str(Path.home() / "anaconda3/bin/ffmpeg"),
-    ]
-    return next((path for path in candidates if Path(path).exists()), None)
 
 
 def ensure_readable_mp4(path: str) -> None:
@@ -62,31 +48,41 @@ def ensure_readable_mp4(path: str) -> None:
     cannot read back. When ffmpeg is available we transcode to H.264 yuv420p
     in place; otherwise the original (still player-playable) file is left as is.
 
+    A transcode failure (disk full, missing encoder) is downgraded to a warning
+    rather than raised: this runs *after* the expensive SAM2 tracking, so an
+    exception here would discard a good result over a cosmetic re-encode. The
+    original file (already playable) is kept, matching the "no ffmpeg" path.
+
     Args:
         path: Path to the just-written video.
     """
-    ffmpeg = _find_ffmpeg()
+    ffmpeg = find_ffmpeg()
     if ffmpeg is None:
         return
     transcoded = f"{path}.h264.mp4"
-    subprocess.run(  # noqa: S603 -- fixed ffmpeg args, no untrusted input
-        [
-            ffmpeg,
-            "-y",
-            "-loglevel",
-            "error",
-            "-i",
-            path,
-            "-c:v",
-            "libx264",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            transcoded,
-        ],
-        check=True,
-    )
+    try:
+        subprocess.run(  # noqa: S603 -- fixed ffmpeg args, no untrusted input
+            [
+                str(ffmpeg),
+                "-y",
+                "-loglevel",
+                "error",
+                "-i",
+                path,
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                transcoded,
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError as error:
+        print(f"[warn] ffmpeg re-encode failed ({error}); keeping original {path}.")
+        Path(transcoded).unlink(missing_ok=True)
+        return
     os.replace(transcoded, path)
 
 
@@ -853,16 +849,19 @@ def main(
                 )
         writer.write(frame)
     capture.release()
-    if writer is not None:
-        writer.release()
-        ensure_readable_mp4(target_video_path)
 
+    # Write the tracks CSV -- the most valuable product -- BEFORE the optional
+    # video transcode, so a re-encode hiccup can never cost the tracking result.
     with open(tracks_csv_path, "w", newline="") as handle:
         csv_writer = csv.writer(handle)
         csv_writer.writerow(
             ["frame", "vehicle", "x1", "y1", "x2", "y2", "anchor_x", "anchor_y"]
         )
         csv_writer.writerows(rows)
+
+    if writer is not None:
+        writer.release()
+        ensure_readable_mp4(target_video_path)
 
     counts = {name: len(per_vehicle[name]) for name in names}
     print(f"Annotated video: {Path(target_video_path).resolve()}")

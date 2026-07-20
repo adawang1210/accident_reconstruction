@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import sys
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import cv2
 import numpy as np
@@ -11,6 +12,8 @@ from PIL import Image, ImageDraw, ImageFont
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from accident_reconstruction.calibrate_homography import (
+    EARTH_RADIUS_M,
+    METERS_PER_DEG_LAT,
     ORIGIN_LATLON,
     USING_GPS_CALIBRATION,
     latlon_to_local_meters,
@@ -546,8 +549,10 @@ def _kml_linestring(
     if len(coords) < 2:
         return ""
     points = " ".join(f"{lon:.7f},{lat:.7f},0" for lat, lon in coords)
+    # ``name`` comes from user-entered vehicle labels; escape so ``&``/``<`` in a
+    # name (e.g. "A&B car") cannot produce malformed KML that fails to import.
     return (
-        f"  <Placemark><name>{name}</name>"
+        f"  <Placemark><name>{escape(name)}</name>"
         f"<Style><LineStyle><color>{color_abgr}</color><width>4</width></LineStyle></Style>"
         f"<LineString><tessellate>1</tessellate>"
         f"<coordinates>{points}</coordinates></LineString></Placemark>\n"
@@ -614,8 +619,8 @@ def build_alignment(
         return lambda latlon, label=None: latlon
 
     clat, clon = TRUE_IMPACT_LATLON
-    m_lat = 111195.0
-    m_lon = 111195.0 * math.cos(math.radians(clat))
+    m_lat = METERS_PER_DEG_LAT
+    m_lon = METERS_PER_DEG_LAT * math.cos(math.radians(clat))
 
     def to_m(latlon: tuple[float, float]) -> np.ndarray:
         return np.array([(latlon[1] - clon) * m_lon, (latlon[0] - clat) * m_lat])
@@ -792,7 +797,7 @@ SPEED_WINDOW_SECONDS = 0.6
 
 def _haversine_m(a: tuple[float, float], b: tuple[float, float]) -> float:
     """Great-circle distance in metres between two ``(lat, lon)`` points."""
-    radius = 6371000.0
+    radius = EARTH_RADIUS_M
     p1, p2 = math.radians(a[0]), math.radians(b[0])
     dphi = math.radians(b[0] - a[0])
     dlmb = math.radians(b[1] - a[1])
@@ -864,11 +869,11 @@ def write_map_figure(data=None, figure_path: Path = MAP_FIGURE_PATH) -> None:
 
     clat, clon = TRUE_IMPACT_LATLON
     scale, size, half = 13.0, 880, 880 / 2
-    m_lon = 111195.0 * math.cos(math.radians(clat))
+    m_lon = METERS_PER_DEG_LAT * math.cos(math.radians(clat))
 
     def to_px(latlon: tuple[float, float]) -> tuple[float, float]:
         x = (latlon[1] - clon) * m_lon
-        y = (latlon[0] - clat) * 111195.0
+        y = (latlon[0] - clat) * METERS_PER_DEG_LAT
         return (half + x * scale, half - y * scale)
 
     image = Image.new("RGB", (size, size), (245, 246, 248))

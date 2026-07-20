@@ -17,7 +17,6 @@ import collections
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import threading
@@ -36,6 +35,7 @@ from accident_reconstruction.calibrate_homography import (
     load_gcps,
     save_gcps,
 )
+from accident_reconstruction.ffmpeg_util import find_ffmpeg
 from accident_reconstruction.scene_config import SCENE, SCENES, VIDEO_DIR, SceneConfig
 from accident_reconstruction.scene_records import (
     find_record_by_url,
@@ -129,6 +129,28 @@ OUTPUT_MARKERS = (
 app = FastAPI()
 
 
+def _safe_data_path(relpath: str) -> Path | None:
+    """Resolve ``relpath`` under ``DATA_ROOT``, or ``None`` if it escapes/misses.
+
+    Guards the file-serving endpoints against path traversal. A plain
+    ``startswith`` string check is unsafe: ``../data_backup/x`` resolves to a
+    sibling whose path still starts with ``…/data``. ``Path.is_relative_to``
+    compares resolved path components, so sibling and parent directories are
+    rejected.
+
+    Args:
+        relpath: A user-supplied path relative to ``data/``.
+
+    Returns:
+        The resolved file path when it lies inside ``DATA_ROOT`` and is a
+        regular file; otherwise ``None``.
+    """
+    target = (DATA_ROOT / relpath).resolve()
+    if not target.is_relative_to(DATA_ROOT.resolve()) or not target.is_file():
+        return None
+    return target
+
+
 class DownloadRequest(BaseModel):
     """A YouTube download request from the front-end.
 
@@ -141,22 +163,6 @@ class DownloadRequest(BaseModel):
     folder: str = "videos"
     start: float | None = None
     end: float | None = None
-
-
-def _ffmpeg_location() -> str | None:
-    """Find an ffmpeg dir for yt-dlp (PATH first, then common installs)."""
-    found = shutil.which("ffmpeg")
-    if found:
-        return str(Path(found).parent)
-    for candidate in (
-        Path.home() / "miniconda3/bin/ffmpeg",
-        Path.home() / "anaconda3/bin/ffmpeg",
-        Path("/opt/homebrew/bin/ffmpeg"),
-        Path("/usr/local/bin/ffmpeg"),
-    ):
-        if candidate.exists():
-            return str(candidate.parent)
-    return None
 
 
 def download_youtube(request: DownloadRequest) -> Path:
@@ -185,9 +191,9 @@ def download_youtube(request: DownloadRequest) -> Path:
         "no_warnings": True,
         "noplaylist": True,
     }
-    ffmpeg = _ffmpeg_location()
+    ffmpeg = find_ffmpeg()
     if ffmpeg:
-        options["ffmpeg_location"] = ffmpeg
+        options["ffmpeg_location"] = str(ffmpeg.parent)
     if request.start is not None and request.end is not None:
         options["download_ranges"] = yt_dlp.utils.download_range_func(
             None, [(request.start, request.end)]
@@ -236,8 +242,8 @@ def list_videos() -> dict:
 @app.get("/media/{relpath:path}")
 def media(relpath: str):
     """Serve a video file with Range support (so the player can seek)."""
-    target = (DATA_ROOT / relpath).resolve()
-    if not str(target).startswith(str(DATA_ROOT.resolve())) or not target.is_file():
+    target = _safe_data_path(relpath)
+    if target is None:
         return JSONResponse({"error": "not found"}, status_code=404)
     return FileResponse(target)
 
@@ -271,8 +277,8 @@ def download(request: DownloadRequest) -> dict:
 @app.get("/api/frame")
 def frame(video: str, index: int = 0):
     """Return one frame of a clip as JPEG (the clickable calibration image)."""
-    target = (DATA_ROOT / video).resolve()
-    if not str(target).startswith(str(DATA_ROOT.resolve())) or not target.is_file():
+    target = _safe_data_path(video)
+    if target is None:
         return JSONResponse({"error": "video not found"}, status_code=404)
     capture = cv2.VideoCapture(str(target))
     capture.set(cv2.CAP_PROP_POS_FRAMES, max(0, index))
@@ -293,8 +299,8 @@ def crop(video: str, index: int = 0, box: str = ""):
         index: Zero-based frame index the box was drawn on.
         box: ``"x1,y1,x2,y2"`` in original-frame pixels.
     """
-    target = (DATA_ROOT / video).resolve()
-    if not str(target).startswith(str(DATA_ROOT.resolve())) or not target.is_file():
+    target = _safe_data_path(video)
+    if target is None:
         return JSONResponse({"error": "video not found"}, status_code=404)
     try:
         x1, y1, x2, y2 = (round(float(v)) for v in box.split(","))
@@ -654,30 +660,45 @@ def get_overrides(video: str | None = None) -> dict:
     }
 
 
+# The keys the step-4 settings form (``currentOverrides()`` in web_app.html)
+# owns: a save from that form sets/clears exactly these and leaves everything
+# else (step-2 geo anchors, CLI-set toggles) untouched.
+STEP4_FORM_KEYS = (
+    "start_frame",
+    "end_frame",
+    "impact_frame",
+    "stop_vehicle",
+    "moving_vehicle",
+    "gates",
+    "struck_full",
+    "min_traj_speed",
+)
+
+
 @app.post("/api/overrides")
 def save_overrides(request: OverridesRequest) -> dict:
-    """Persist the scene's ``overrides.json`` (drops empty/None entries).
+    """Persist the step-4 settings into the scene's ``overrides.json``.
 
-    Geo-anchor keys (``true_impact_latlon``, ``true_vehicle_starts``) written by
-    the step-2 anchor form are preserved so this step-4 save does not wipe them.
+    Default-keep: every existing override is preserved; only the keys this form
+    owns (``STEP4_FORM_KEYS``) are overwritten (when the form sent a value) or
+    cleared (when it did not). This means keys set elsewhere -- the step-2 geo
+    anchors and CLI toggles like ``truncate_boxes_at_impact`` -- survive a
+    step-4 save without needing a preserve-whitelist (which silently dropped any
+    key nobody remembered to list). Mirrors ``save_anchors``.
     """
     scene = _scene_for_video(request.video) if request.video else SCENE
     if scene is None:
         return {"ok": False, "error": "此影片沒有對應的場景設定（scene_config）"}
-    cleaned = {k: v for k, v in request.overrides.items() if v not in (None, "")}
-    # Keys not exposed in this step-4 form are preserved so a save here does not
-    # wipe them: the step-2 geo anchors, and CLI-set tracking toggles like
-    # ``truncate_boxes_at_impact`` (the box-merge guard for fusing collisions).
-    for key in (
-        "true_impact_latlon",
-        "true_vehicle_starts",
-        "truncate_boxes_at_impact",
-    ):
-        if key not in cleaned and scene.overrides.get(key):
-            cleaned[key] = scene.overrides[key]
+    merged = dict(scene.overrides)  # keep everything by default
+    for key in STEP4_FORM_KEYS:
+        value = request.overrides.get(key)
+        if value in (None, ""):
+            merged.pop(key, None)
+        else:
+            merged[key] = value
     scene.overrides_path.parent.mkdir(parents=True, exist_ok=True)
-    scene.overrides_path.write_text(json.dumps(cleaned, indent=2, ensure_ascii=False))
-    return {"ok": True, "file": str(scene.overrides_path), "overrides": cleaned}
+    scene.overrides_path.write_text(json.dumps(merged, indent=2, ensure_ascii=False))
+    return {"ok": True, "file": str(scene.overrides_path), "overrides": merged}
 
 
 class AnchorsRequest(BaseModel):
