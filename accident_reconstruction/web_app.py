@@ -496,6 +496,10 @@ def calibrate(request: CalibrateRequest) -> dict:
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # One running pipeline job per scene -> {"log": deque, "done", "returncode"}.
 _JOBS: dict[str, dict] = {}
+# Guards the check-then-start of a job so two concurrent /api/run (or
+# /api/reconstruct) calls can't both pass the "not running" check and each spawn
+# a subprocess for the same scene.
+_JOBS_LOCK = threading.Lock()
 
 
 def _start_job(scene, module: str) -> dict:
@@ -576,10 +580,11 @@ def run_pipeline_endpoint(request: RunRequest) -> dict:
     scene = _scene_for_video(request.video) if request.video else SCENE
     if scene is None:
         return {"ok": False, "error": "此影片沒有對應的場景設定（scene_config）"}
-    job = _JOBS.get(scene.name)
-    if job and not job["done"]:
-        return {"ok": True, "scene": scene.name, "running": True}
-    _JOBS[scene.name] = _start_job(scene, "accident_reconstruction.run_pipeline")
+    with _JOBS_LOCK:
+        job = _JOBS.get(scene.name)
+        if job and not job["done"]:
+            return {"ok": True, "scene": scene.name, "running": True}
+        _JOBS[scene.name] = _start_job(scene, "accident_reconstruction.run_pipeline")
     return {"ok": True, "scene": scene.name, "running": True}
 
 
@@ -595,10 +600,13 @@ def reconstruct_endpoint(request: RunRequest) -> dict:
         return {"ok": False, "error": "此影片沒有對應的場景設定（scene_config）"}
     if not scene.prompt_tracks_csv.exists():
         return {"ok": False, "error": "尚無追蹤結果，請先執行完整 pipeline（④ 執行）"}
-    job = _JOBS.get(scene.name)
-    if job and not job["done"]:
-        return {"ok": True, "scene": scene.name, "running": True}
-    _JOBS[scene.name] = _start_job(scene, "accident_reconstruction.auto_reconstruct")
+    with _JOBS_LOCK:
+        job = _JOBS.get(scene.name)
+        if job and not job["done"]:
+            return {"ok": True, "scene": scene.name, "running": True}
+        _JOBS[scene.name] = _start_job(
+            scene, "accident_reconstruction.auto_reconstruct"
+        )
     return {"ok": True, "scene": scene.name, "running": True}
 
 

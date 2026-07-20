@@ -17,6 +17,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import traceback
 from collections import defaultdict
 from pathlib import Path
 
@@ -498,7 +499,10 @@ def main(csv_path: str = str(PROMPT_TRACKS_CSV)) -> None:
         if reconstruction_json is not None:
             print(f"Reconstruction JSON: {reconstruction_json.resolve()}")
     except Exception as error:  # never let the optional view break the run
+        # Print the traceback: this branch has silently swallowed import errors
+        # before, so a one-line message is not enough to diagnose a real failure.
         print(f"(recognised figure skipped: {error})")
+        traceback.print_exc()
 
     print(f"Impact frame: {impact_frame}")
     counts = ", ".join(f"{k}: {len(v)}" for k, v in metric.items())

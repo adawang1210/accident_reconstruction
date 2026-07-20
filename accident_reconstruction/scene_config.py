@@ -434,7 +434,11 @@ def discover_scenes() -> None:
     """
     if not DATA_ROOT.exists():
         return
-    for path in sorted(DATA_ROOT.rglob("scene.json")):
+    # scene.json only lives at data/<clip>/scene.json or data/scenes/<name>/scene.json;
+    # glob those fixed depths instead of rglob-ing the whole tree, which would walk
+    # every extracted-frame / artifact directory under data/ on each process start.
+    paths = sorted({*DATA_ROOT.glob("*/scene.json"), *DATA_ROOT.glob("*/*/scene.json")})
+    for path in paths:
         try:
             scene = SceneConfig.from_dict(json.loads(path.read_text(encoding="utf-8")))
         except (OSError, ValueError, KeyError):

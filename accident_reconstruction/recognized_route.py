@@ -25,6 +25,7 @@ Example:
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 from pathlib import Path
@@ -131,6 +132,7 @@ _FALLBACK_RGB = [
 ]
 
 
+@functools.lru_cache(maxsize=1)
 def _vehicle_colors() -> dict[str, tuple[int, int, int]]:
     """Per-vehicle RGB taken from the user-drawn boxes (``vehicle_boxes.json``).
 
@@ -138,6 +140,10 @@ def _vehicle_colors() -> dict[str, tuple[int, int, int]]:
     a vehicle's recognised trajectory the SAME colour as its tracking box, and -- as
     the workbench assigns distinct colours per object -- keeps same-class vehicles
     (``car`` / ``car2``) visually apart.
+
+    Cached: ``_display_for`` calls this once per vehicle in the writer loops, but
+    ``SCENE`` (hence ``vehicle_boxes``) is fixed for a process, so the file is read
+    and parsed once instead of per vehicle.
 
     Returns:
         ``{vehicle_name: (r, g, b)}`` for objects that carry a colour.
