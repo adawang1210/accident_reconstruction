@@ -414,6 +414,11 @@ ACCIDENT_SCENE=<場景> .venv/bin/python -m accident_reconstruction.depth_backdr
 也可輸出 INRIA 格式 `.ply`（`write_ply`，SH-DC 顏色 + log-scale + 四元數）——
 標準 3DGS 交換格式，SuperSplat / 其他 viewer 皆吃。
 
+**`--scene-only`（純場景、無車輛）**：固定相機的時間中位數（`median_plate`）把移動
+車流洗成空景，`--inpaint` box 補掉撞擊後停在原地的車（中位數會保留久留物），對撞擊
+**前**的幀取中位數讓碰撞車還在移動而自動消失。產出的是「路口本體」而非凍結的車。
+BMW 指令見 `data/車禍影片_BMW…/README_3D.md`。
+
 **幾何正確性已驗證（BMW frame 0）**：以 Python 從點雲直接渲染新視角（`bmw_orbit.mp4`、
 `orbit_left/right.png`），左右 **±14°** 掃視下路面、斑馬線、BMW／機車／休旅車位置都對，
 大角度出現遮蔽破洞（相機沒看過的地方）。**這證明 backdrop 本身正確。**

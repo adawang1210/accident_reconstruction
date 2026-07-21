@@ -13,6 +13,7 @@ from accident_reconstruction.depth_backdrop import (
     SH_C0,
     camera_to_viewer,
     focal_from_known_width,
+    median_plate,
     splat_scales,
     unproject_depth,
     write_ply,
@@ -127,3 +128,24 @@ def test_write_ply_header_and_color_roundtrip(tmp_path) -> None:
     assert decoded == pytest.approx(128 / 255, abs=1e-4)
     assert record["scale_0"] == pytest.approx(np.log(0.05), abs=1e-5)
     assert record["rot_0"] == 1.0  # identity quaternion, w first
+
+
+def test_median_plate_removes_moving_object() -> None:
+    """A bright block that moves each frame vanishes under the temporal median."""
+    frames = np.full((3, 4, 6, 3), 100, np.uint8)
+    frames[0, :, 0] = 255  # block at col 0 in frame 0
+    frames[1, :, 2] = 255  # col 2 in frame 1
+    frames[2, :, 4] = 255  # col 4 in frame 2
+    plate = median_plate(frames)
+    assert plate.shape == (4, 6, 3)
+    assert np.all(plate == 100)  # every pixel is background in >= 2/3 frames
+
+
+def test_median_plate_inpaints_residual_box() -> None:
+    """A box that survives the median (e.g. a parked car) is painted over."""
+    frames = np.full((3, 20, 20, 3), 120, np.uint8)
+    frames[:, 4:8, 4:8] = 0  # a black patch present in ALL frames (parked)
+    plate = median_plate(frames, inpaint_boxes=[(4, 4, 8, 8)])
+    # the patch is gone -- filled from the surrounding grey, not left black
+    assert plate[5, 5].tolist() != [0, 0, 0]
+    assert plate[5, 5, 0] > 100

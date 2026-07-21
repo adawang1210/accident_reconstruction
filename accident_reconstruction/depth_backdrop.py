@@ -8,13 +8,21 @@ point cloud with a monocular METRIC depth model, and write it as a Gaussian
 directly via ``VITE_SPLAT_URL`` -- a schematic 3D backdrop, valid for small view
 changes (roughly +/-15 deg; occlusion holes appear beyond that).
 
+``--scene-only`` builds the EMPTY scene (no vehicles): a fixed camera's temporal
+median over pre-impact frames removes the moving traffic, and ``--inpaint`` boxes
+paint out any parked/resting vehicle the median keeps -- so the backdrop is the
+intersection itself, not the cars frozen into it.
+
 This is NOT measurement-grade geometry: speeds/positions stay with the 2D
-homography pipeline. See ``frontend/SPLAT_NOTES.md`` (10.1, 11.3).
+homography pipeline. See ``frontend/SPLAT_NOTES.md`` (10.1, 11.3, 12).
 
 Example:
     ```bash
-    ACCIDENT_SCENE=車禍影片_BMW神之鬼切_2026_05_16_臺北市大安區基隆路四段 \
-      .venv/bin/python -m accident_reconstruction.depth_backdrop --stride 3
+    # single frame (vehicles baked in):
+    ACCIDENT_SCENE=<場景> .venv/bin/python -m accident_reconstruction.depth_backdrop
+    # empty scene (no vehicles), crash resting at the impact frame ~140:
+    ACCIDENT_SCENE=<場景> .venv/bin/python -m accident_reconstruction.depth_backdrop \
+      --scene-only --plate-start 0 --plate-end 130 --inpaint 0,225,480,445
     ```
 """
 
@@ -266,6 +274,73 @@ def write_ply(
     return path
 
 
+def median_plate(
+    frames: np.ndarray,
+    inpaint_boxes: list[tuple[int, int, int, int]] | None = None,
+) -> np.ndarray:
+    """The static scene from a stack of fixed-camera frames (vehicles removed).
+
+    A fixed camera sees the same background every frame while traffic passes
+    through, so the per-pixel temporal median is the empty scene -- any object
+    occupying a pixel for less than half the frames vanishes. Objects that stay
+    put for MOST of the clip (a parked car, or the crash vehicles resting at the
+    impact point) survive the median; ``inpaint_boxes`` paints those out with
+    surrounding road texture. Feed pre-impact frames only (see
+    :func:`sample_frames`) so the collision vehicles are still moving and drop
+    out on their own.
+
+    Args:
+        frames: ``(k, H, W, 3)`` stacked BGR frames.
+        inpaint_boxes: Optional ``[(x1, y1, x2, y2), ...]`` regions of residual
+            stationary vehicles to inpaint.
+
+    Returns:
+        ``(H, W, 3)`` BGR plate of the static scene.
+
+    Examples:
+        ```python
+        # three frames, a bright block moving left-to-right over grey -> median grey
+        frames = np.full((3, 4, 6, 3), 100, np.uint8)
+        frames[0, :, 0] = 255; frames[1, :, 2] = 255; frames[2, :, 4] = 255
+        int(median_plate(frames)[0, 0, 0])
+        # 100
+        ```
+    """
+    plate = np.median(frames, axis=0).astype(np.uint8)
+    if inpaint_boxes:
+        mask = np.zeros(plate.shape[:2], np.uint8)
+        for x1, y1, x2, y2 in inpaint_boxes:
+            mask[y1:y2, x1:x2] = 255
+        plate = cv2.inpaint(plate, mask, 5, cv2.INPAINT_TELEA)
+    return plate
+
+
+def sample_frames(video_path: Path, start: int, end: int, count: int) -> np.ndarray:
+    """Read ``count`` frames evenly spread over ``[start, end]`` of a video.
+
+    Args:
+        video_path: Source video.
+        start: First frame index (clamped to 0).
+        end: Last frame index (clamped to the clip length); ``-1`` means the end.
+        count: How many frames to sample.
+
+    Returns:
+        ``(k, H, W, 3)`` stacked BGR frames (``k <= count``).
+    """
+    capture = cv2.VideoCapture(str(video_path))
+    total = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    hi = total - 1 if end < 0 else min(end, total - 1)
+    lo = max(0, start)
+    frames = []
+    for index in np.linspace(lo, hi, count).astype(int):
+        capture.set(cv2.CAP_PROP_POS_FRAMES, int(index))
+        ok, frame = capture.read()
+        if ok:
+            frames.append(frame)
+    capture.release()
+    return np.stack(frames)
+
+
 def estimate_depth(image_bgr: np.ndarray) -> np.ndarray:
     """Run the metric depth model on a BGR frame (downloads weights on first use).
 
@@ -301,14 +376,42 @@ def main() -> None:
         "derive a better one with focal_from_known_width)",
     )
     parser.add_argument("--out", type=Path, default=None, help="output .splat path")
+    parser.add_argument(
+        "--scene-only",
+        action="store_true",
+        help="build an EMPTY scene: temporal-median plate over --plate-start..end "
+        "(removes moving traffic) instead of a single frame",
+    )
+    parser.add_argument("--plate-start", type=int, default=0, help="plate first frame")
+    parser.add_argument(
+        "--plate-end",
+        type=int,
+        default=-1,
+        help="plate last frame (-1 = clip end; for a crash use pre-impact frames "
+        "so the collision vehicles are still moving and drop out)",
+    )
+    parser.add_argument(
+        "--inpaint",
+        action="append",
+        default=[],
+        metavar="x1,y1,x2,y2",
+        help="box of a residual parked/stopped vehicle to paint out (repeatable)",
+    )
     args = parser.parse_args()
 
-    capture = cv2.VideoCapture(str(SCENE.source_video))
-    capture.set(cv2.CAP_PROP_POS_FRAMES, args.frame)
-    ok, frame = capture.read()
-    capture.release()
-    if not ok:
-        raise SystemExit(f"could not read frame {args.frame} of {SCENE.source_video}")
+    if args.scene_only:
+        frames = sample_frames(SCENE.source_video, args.plate_start, args.plate_end, 60)
+        boxes = [tuple(int(v) for v in b.split(",")) for b in args.inpaint]
+        frame = median_plate(frames, boxes or None)
+    else:
+        capture = cv2.VideoCapture(str(SCENE.source_video))
+        capture.set(cv2.CAP_PROP_POS_FRAMES, args.frame)
+        ok, frame = capture.read()
+        capture.release()
+        if not ok:
+            raise SystemExit(
+                f"could not read frame {args.frame} of {SCENE.source_video}"
+            )
 
     focal = args.focal if args.focal is not None else float(frame.shape[1])
     depth = estimate_depth(frame)
