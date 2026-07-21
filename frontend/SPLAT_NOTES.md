@@ -394,6 +394,36 @@ RMSE（> 0.5 m 會警告對應點可能讀錯／共線）。對應實作見
 
 ---
 
+## 12. 已實作：單張深度 → 3D 示意背景（`depth_backdrop.py`，2026-07）
+
+不到現場、也不靠多視角，用一張影格生出可放進 viewer 的 3D 背景。實作為
+[`accident_reconstruction.depth_backdrop`](../accident_reconstruction/depth_backdrop.py)，
+測試 `tests/test_depth_backdrop.py`（純函式：反投影幾何、座標轉換、`.splat` 二進位版面）。
+
+**流程**：源影格 → Depth-Anything-V2 Metric Outdoor（公制深度，M4 上 MPS 秒級）→
+針孔反投影成彩色點雲 → 寫成 antimatter15 `.splat`（每點一顆等向高斯，32 bytes/點）
+→ mkkellogg viewer 原生載入。
+
+```bash
+ACCIDENT_SCENE=<場景> .venv/bin/python -m accident_reconstruction.depth_backdrop \
+    --stride 3 --focal 1945     # focal 可用 focal_from_known_width 由已知車寬反推
+# → data/<場景>/<場景>_backdrop.splat（BMW：229,958 點、7.4 MB）
+# 放進 frontend/public/ 並設 VITE_SPLAT_URL=/<name>.splat
+```
+
+**實測（BMW frame 0）**：viewer 正確載入 229,958 個 splat；幾何在 **±15°** 視角內成立
+（路面、斑馬線、車輛位置對），大角度出現遮蔽破洞（相機沒看過的地方）。
+
+**已知限制／待辦**：
+
+- **示意級，非量測級**。深度是單目估計、絕對尺度僅約略；速度／位置仍走 2D homography。
+- **尚未與軌跡場景對位**：backdrop 在「深度相機自身座標系」，軌跡在「公尺場景系」，
+    兩者無自動關係。要疊合需走 §9.2 的 `splat_georef`（人工點幾個地標對應點解相似變換）。
+    `SplatScene.tsx` 已把 viewer 掛到 `window.__splatViewer` 方便讀地標 splat 座標。
+- 天空/遠景會被 `DEPTH_RANGE_M`（2–60 m）截掉；近處相機柱體也濾除。
+
+---
+
 ## 7. 參考來源
 
 - 2026 工具比較：[Polyvia3D](https://www.polyvia3d.com/guides/gaussian-splatting-tools-comparison)

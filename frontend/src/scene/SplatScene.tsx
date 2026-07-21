@@ -39,9 +39,12 @@ export function SplatScene() {
       gpuAcceleratedSort: true,
       sharedMemoryForWorkers: false,
     });
-    v.addSplatScene(URL, { showLoadingUI: false, progressiveLoad: false }).catch(
-      (err: unknown) => console.error("[splat] failed to load", URL, err),
-    );
+    v.addSplatScene(URL, { showLoadingUI: false, progressiveLoad: false })
+      .then(() => console.info("[splat] loaded", URL))
+      .catch((err: unknown) => console.error("[splat] failed to load", URL, err));
+    // Alignment aid (SPLAT_NOTES §9.2): expose the viewer so landmark splat
+    // coordinates can be read from the console and fed to splat_georef.
+    (window as unknown as Record<string, unknown>).__splatViewer = v;
     return v;
   }, []);
 
