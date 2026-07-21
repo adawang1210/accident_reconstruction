@@ -411,15 +411,26 @@ ACCIDENT_SCENE=<場景> .venv/bin/python -m accident_reconstruction.depth_backdr
 # 放進 frontend/public/ 並設 VITE_SPLAT_URL=/<name>.splat
 ```
 
-**實測（BMW frame 0）**：viewer 正確載入 229,958 個 splat；幾何在 **±15°** 視角內成立
-（路面、斑馬線、車輛位置對），大角度出現遮蔽破洞（相機沒看過的地方）。
+也可輸出 INRIA 格式 `.ply`（`write_ply`，SH-DC 顏色 + log-scale + 四元數）——
+標準 3DGS 交換格式，SuperSplat / 其他 viewer 皆吃。
+
+**幾何正確性已驗證（BMW frame 0）**：以 Python 從點雲直接渲染新視角（`bmw_orbit.mp4`、
+`orbit_left/right.png`），左右 **±14°** 掃視下路面、斑馬線、BMW／機車／休旅車位置都對，
+大角度出現遮蔽破洞（相機沒看過的地方）。**這證明 backdrop 本身正確。**
 
 **已知限制／待辦**：
 
+- ⚠️ **前端 viewer 目前無法「顯示」splat（既有問題，非本模組）**：`.splat` 與 `.ply`
+    都能載入（`getSplatCount` = 229,958），但畫面渲染不出任何像素——與 §3 記錄的
+    `sample.splat` 同一個未解問題（mkkellogg `DropInViewer` 在本專案 R3F 整合下的渲染
+    路徑）。軌跡線（普通 Three.js）正常，只有 splat mesh 不出像素。**要在瀏覽器互動看
+    真實場景，得先解這個 viewer 渲染 bug**（或改用外部 viewer 如 SuperSplat 開 `.ply`）。
+    在那之前，用 Python 渲染的 orbit 影片展示 3D。
 - **示意級，非量測級**。深度是單目估計、絕對尺度僅約略；速度／位置仍走 2D homography。
 - **尚未與軌跡場景對位**：backdrop 在「深度相機自身座標系」，軌跡在「公尺場景系」，
     兩者無自動關係。要疊合需走 §9.2 的 `splat_georef`（人工點幾個地標對應點解相似變換）。
-    `SplatScene.tsx` 已把 viewer 掛到 `window.__splatViewer` 方便讀地標 splat 座標。
+    `SplatScene.tsx` 已把 viewer 掛到 `window.__splatViewer` 方便讀地標 splat 座標；
+    `Scene.tsx` 在有 splat 時把相機改成正對點雲（不再走俯視軌跡飛入）。
 - 天空/遠景會被 `DEPTH_RANGE_M`（2–60 m）截掉；近處相機柱體也濾除。
 
 ---

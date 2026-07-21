@@ -196,6 +196,76 @@ def write_splat(
     return path
 
 
+#: Zeroth-order spherical-harmonic normalisation (``1 / (2*sqrt(pi))``): the INRIA
+#: PLY stores DC color as an SH coefficient, decoded as ``0.5 + SH_C0 * f_dc``.
+SH_C0 = 0.28209479177387814
+
+
+def write_ply(
+    path: Path,
+    points: np.ndarray,
+    colors_rgb: np.ndarray,
+    scales_m: np.ndarray,
+) -> Path:
+    """Write isotropic Gaussians as an INRIA-format binary ``.ply``.
+
+    The standard 3DGS PLY the mkkellogg viewer's well-tested PLY loader expects:
+    ``x y z``, ``f_dc_0..2`` (SH DC color), ``opacity`` (logit), ``scale_0..2``
+    (log-metres), ``rot_0..3`` (quaternion, w first). Prefer this over
+    :func:`write_splat` -- the hand-written ``.splat`` path renders invisibly in
+    the current viewer (see ``frontend/SPLAT_NOTES.md`` §3), while the PLY path
+    does not.
+
+    Args:
+        path: Output ``.ply`` path (parent dirs created).
+        points: ``(N, 3)`` positions, viewer frame.
+        colors_rgb: ``(N, 3)`` uint8 RGB.
+        scales_m: ``(N,)`` isotropic radii in metres (> 0).
+
+    Returns:
+        The path written.
+    """
+    n = len(points)
+    rgb = np.clip(np.asarray(colors_rgb, dtype=np.float32) / 255.0, 1e-4, 1 - 1e-4)
+    f_dc = (rgb - 0.5) / SH_C0  # invert the SH DC decode
+    log_scale = np.log(np.maximum(np.asarray(scales_m, dtype=np.float32), 1e-6))
+    fields = [
+        "x",
+        "y",
+        "z",
+        "f_dc_0",
+        "f_dc_1",
+        "f_dc_2",
+        "opacity",
+        "scale_0",
+        "scale_1",
+        "scale_2",
+        "rot_0",
+        "rot_1",
+        "rot_2",
+        "rot_3",
+    ]
+    record = np.zeros(n, dtype=[(name, "<f4") for name in fields])
+    record["x"], record["y"], record["z"] = np.asarray(points, dtype=np.float32).T
+    record["f_dc_0"], record["f_dc_1"], record["f_dc_2"] = f_dc.T
+    record["opacity"] = 6.0  # sigmoid(6) ~= 0.9975, effectively opaque
+    for axis in ("scale_0", "scale_1", "scale_2"):
+        record[axis] = log_scale
+    record["rot_0"] = 1.0  # identity quaternion (w, x, y, z)
+    header = (
+        "ply\n"
+        "format binary_little_endian 1.0\n"
+        f"element vertex {n}\n"
+        + "".join(f"property float {name}\n" for name in fields)
+        + "end_header\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        handle.write(header.encode("ascii"))
+        handle.write(record.tobytes())
+    return path
+
+
 def estimate_depth(image_bgr: np.ndarray) -> np.ndarray:
     """Run the metric depth model on a BGR frame (downloads weights on first use).
 

@@ -78,12 +78,33 @@ export function Scene({ data }: { data: Reconstruction }) {
     Boolean(GOOGLE_TILES_KEY && data.origin_latlon);
   const useSchematic = !useSplat && !useTiles && Boolean(data.origin_latlon);
 
+  // The depth backdrop is a FRONTAL point cloud lying along -z from the origin
+  // (the CCTV's own view direction), not a top-down map, so the trajectory
+  // fly-down would stare past it into empty space. Look INTO the cloud instead.
+  const SPLAT_TARGET: [number, number, number] = [0, 2, -20];
+  const SPLAT_EYE: [number, number, number] = [0, 6, 16];
+
   // Opening move: a high near-top-down look at the action easing down into a
   // low cinematic shot. Both ends keep the cars in frame, so the scene is never
-  // staring into empty space while tiles stream (or fail to).
+  // staring into empty space while tiles stream (or fail to). Skipped for a
+  // splat backdrop, which gets a fixed frontal camera facing the point cloud.
   useFrame((_, dt) => {
     if (introDone.current) return;
     const controls = controlsRef.current;
+
+    if (useSplat) {
+      camera.position.set(...SPLAT_EYE);
+      camera.lookAt(...SPLAT_TARGET);
+      camera.updateProjectionMatrix();
+      if (controls) {
+        controls.target.set(...SPLAT_TARGET);
+        controls.enabled = true;
+        controls.update();
+      }
+      introDone.current = true;
+      return;
+    }
+
     if (controls) controls.enabled = false; // don't fight the user mid-intro
 
     introElapsed.current += dt;
@@ -125,10 +146,15 @@ export function Scene({ data }: { data: Reconstruction }) {
     }
   }, [camera, groundY]);
 
-  // OrbitControls target sits on the real street.
+  // OrbitControls target sits on the real street -- or, for a splat backdrop,
+  // inside the point cloud so orbiting pivots around the intersection.
   const target = useMemo(
-    () => new THREE.Vector3(center[0], groundY, center[2]),
-    [center, groundY],
+    () =>
+      useSplat
+        ? new THREE.Vector3(...SPLAT_TARGET)
+        : new THREE.Vector3(center[0], groundY, center[2]),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [center, groundY, useSplat],
   );
 
   return (

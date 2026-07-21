@@ -10,10 +10,12 @@ import numpy as np
 import pytest
 
 from accident_reconstruction.depth_backdrop import (
+    SH_C0,
     camera_to_viewer,
     focal_from_known_width,
     splat_scales,
     unproject_depth,
+    write_ply,
     write_splat,
 )
 
@@ -80,3 +82,48 @@ def test_write_splat_binary_layout(tmp_path) -> None:
     assert record["scale"].tolist() == pytest.approx([0.05, 0.05, 0.05])
     assert record["rgba"].tolist() == [10, 20, 30, 255]  # opaque
     assert record["rot"].tolist() == [255, 128, 128, 128]  # identity quaternion
+
+
+def test_write_ply_header_and_color_roundtrip(tmp_path) -> None:
+    """Binary PLY has the 3DGS fields and encodes color so SH-DC decode inverts.
+
+    The viewer decodes color as ``0.5 + SH_C0 * f_dc``; a mid-grey (128) point
+    must round-trip back through that formula.
+    """
+    points = np.array([[1.0, -2.0, -10.0]], dtype=np.float32)
+    colors = np.array([[128, 128, 128]], dtype=np.uint8)
+    path = write_ply(tmp_path / "b.ply", points, colors, np.array([0.05]))
+    raw = path.read_bytes()
+    header, _, body = raw.partition(b"end_header\n")
+    text = header.decode("ascii")
+    assert "format binary_little_endian 1.0" in text
+    assert "element vertex 1" in text
+    for field in ("f_dc_0", "opacity", "scale_0", "rot_0"):
+        assert f"property float {field}" in text
+    record = np.frombuffer(
+        body,
+        dtype=[
+            (n, "<f4")
+            for n in (
+                "x",
+                "y",
+                "z",
+                "f_dc_0",
+                "f_dc_1",
+                "f_dc_2",
+                "opacity",
+                "scale_0",
+                "scale_1",
+                "scale_2",
+                "rot_0",
+                "rot_1",
+                "rot_2",
+                "rot_3",
+            )
+        ],
+    )[0]
+    assert [record["x"], record["y"], record["z"]] == [1.0, -2.0, -10.0]
+    decoded = 0.5 + SH_C0 * record["f_dc_0"]
+    assert decoded == pytest.approx(128 / 255, abs=1e-4)
+    assert record["scale_0"] == pytest.approx(np.log(0.05), abs=1e-5)
+    assert record["rot_0"] == 1.0  # identity quaternion, w first
