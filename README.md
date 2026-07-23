@@ -28,7 +28,7 @@
 |---|---|---|---|
 | **2D 重建管線** | 影片 → 追蹤 → 投影 → 撞擊/對齊 → KML/CSV/圖 | `accident_reconstruction/` | [`docs/README.md`](docs/README.md)、[`ACCIDENT_2D_RECONSTRUCTION.md`](docs/ACCIDENT_2D_RECONSTRUCTION.md) |
 | **Web 工作台** | 五步驟 UI 收整條管線，磁碟讀結果 | `web_app.py` | [`docs/README.md`](docs/README.md) §工作台 |
-| **軌跡精修** | 在地輪廓 anchor、Savitzky-Golay 平滑、空缺補值、Stage-2 疊加影片 | `ground_footprint.py`、`auto_reconstruct.py` | [`docs/summary.md`](docs/summary.md) |
+| **軌跡精修** | 在地輪廓 anchor、Kalman-RTS 平滑、空缺補值、Stage-2 疊加影片 | `ground_footprint.py`、`trajectory_smoothing.py`、`auto_reconstruct.py` | [`docs/summary.md`](docs/summary.md)、[`TRAJECTORY_SMOOTHING.md`](docs/TRAJECTORY_SMOOTHING.md) |
 | **車速校正**（Path A） | 方向感知的縱向尺度校正（後視誠實棄權） | `auto_reconstruct.py` | [`docs/summary.md`](docs/summary.md) §車速 |
 | **3D 場景重建** | 深度 splat 背景 + CAD 路面模型 | `depth_backdrop.py`、`self_calibration.py`※ | [`docs/3D_RECONSTRUCTION.md`](docs/3D_RECONSTRUCTION.md) |
 | **前端 3D 檢視器** | Three.js/R3F 回放軌跡＋底圖（OSM/Google tiles/splat） | `frontend/` | [`frontend/README.md`](frontend/README.md)、[`SPLAT_NOTES.md`](frontend/SPLAT_NOTES.md) |

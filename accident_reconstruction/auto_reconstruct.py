@@ -26,6 +26,7 @@ import cv2
 import numpy as np
 
 from accident_reconstruction import ground_footprint as gf
+from accident_reconstruction import trajectory_smoothing as ts
 from accident_reconstruction.birdseye_manual_annotation import (
     write_csv,
     write_kml,
@@ -198,13 +199,14 @@ def refine_metric_from_contours(
             label, frames, positions, per_frame, lengths.get(label)
         )
 
-        # --- Layer 3: Savitzky-Golay smoothing. Pixel-quantised contours leave a
-        # centimetre-scale jitter on the anchor; a quadratic-order SG filter sheds
-        # it while preserving the path's real shape (turns, collision motion) --
-        # unlike a moving average, which would round the corners we are trying to
-        # represent. This is the "plausible but faithful" trajectory the viewer
-        # and the workbench route draw.
-        positions = gf.savgol_smooth(frames, positions)
+        # --- Layer 3: constant-acceleration Kalman + RTS smoothing. A local
+        # polynomial (Savitzky-Golay) only shrinks noise AMPLITUDE and leaves the
+        # motion kinematically implausible -- on BMW ~92% of frames still exceed
+        # the 15 m/s^3 jerk threshold. The CA Kalman + RTS smoother imposes a
+        # physical prior (continuous velocity + acceleration), dropping that to 0%
+        # (~100x lower jerk) while moving the path only a few cm, and it represents
+        # turns naturally rather than rounding them. See docs/TRAJECTORY_SMOOTHING.md.
+        positions = ts.kalman_rts_smooth(frames, positions, scene.fps)
 
         # --- No-regression guard (all-or-nothing per vehicle). The on-contour
         # anchor helps WIDE objects (a car's box-corner sits far off the body),

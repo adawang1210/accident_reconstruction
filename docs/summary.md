@@ -154,12 +154,12 @@ homography 在校正區外（尤其近地平線）會壓縮遠處距離，使 me
     （影像面 anchor 誤差 20→3 px）。
 - **已知車長矩形擬合**（尺度相依，選用第二層）：只在 homography 尺度忠實
     （投影輪廓長 ≈ 真實車長的 0.7–1.6 倍）且為箱型四輪車時，再精修到佔地中心。
-- **Savitzky-Golay 平滑**（`savgol_smooth`）：像素量化留下公分級抖動；用**二階局部
-    多項式**（window 7）擬合去抖，同時**保留路徑真實形狀**（真實轉彎、撞擊瞬間的
-    急動），這點勝過會把轉角抹圓的移動平均。在 frame 域擬合以支援丟幀／變動幀率。
-    參數與做法參考車流軌跡資料集（NGSIM）常用設定：window 7、order 2；來源見
-    tandfonline `10.1080/23249935.2022.2163207`、GitHub `NGSIM-US-101-trajectory-dataset-smoothing`。
-    實測 BMW：抖動 −47%，路徑僅位移 ~2 cm（幾乎不改原始路徑）。
+- **平滑（Kalman+RTS，取代 Savitzky-Golay）**：SG 是局部多項式降噪、**無物理模型**，
+    實測後仍讓 BMW **九成的幀不合運動學**（|jerk|>15 m/s³）。改用**等加速 Kalman + RTS
+    平滑器**（`trajectory_smoothing.kalman_rts_smooth`）——以連續速度/加速度為先驗，把
+    `frac>15` 從 92% 降到 5%（機車 0%）、jerk 降約 60–150 倍，路徑僅移數公分、過彎不切角。
+    方法研究、實測數字與踩到的坑（速度初始化、用 innovation gating 而非加速度門檻剔除離群）
+    見 [`TRAJECTORY_SMOOTHING.md`](TRAJECTORY_SMOOTHING.md)。
 - **無回歸保護**（per-vehicle）：在地輪廓 anchor 對**寬物體**（汽車）有幫助，但對
     **窄物體**（機車）的中位 column 會逐幀跳、在斷幀處製造假速度尖峰。若某車套用後
     的**峰值速度**超過 legacy 的 1.5 倍就整條退回 legacy（`_PEAK_SPEED_TOLERANCE`）。

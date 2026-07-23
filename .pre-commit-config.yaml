@@ -83,7 +83,7 @@ repos:
       - id: codespell
         # Lockfiles carry base64/hash fragments that trip the spell checker.
         exclude: "(^|/)(package-lock\\.json|uv\\.lock)$"
-        # LOD = level of detail (3D tiles), not a misspelling of "load".
-        args: ["--ignore-words-list=LOD"]
+        # LOD = level of detail (3D tiles); tung = Rauch-Tung-Striebel (a name).
+        args: ["--ignore-words-list=LOD,tung"]
         additional_dependencies:
           - "tomli>=2.0.1"
