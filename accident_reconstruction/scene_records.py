@@ -92,9 +92,7 @@ def load_records(records_dir: Path = RECORDS_DIR) -> list[dict]:
     return records
 
 
-def find_record_by_url(
-    url: str | None, records_dir: Path = RECORDS_DIR
-) -> dict | None:
+def find_record_by_url(url: str | None, records_dir: Path = RECORDS_DIR) -> dict | None:
     """Return the record whose ``youtube_url`` matches ``url`` by video id.
 
     Args:

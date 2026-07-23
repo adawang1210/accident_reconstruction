@@ -25,6 +25,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from accident_reconstruction import ground_footprint as gf
 from accident_reconstruction.birdseye_manual_annotation import (
     write_csv,
     write_kml,
@@ -36,6 +37,7 @@ from accident_reconstruction.calibrate_homography import (
     load_gcps,
     undistort_to_normalized,
 )
+from accident_reconstruction.ffmpeg_util import ensure_readable_mp4
 from accident_reconstruction.motion import euclidean, windowed_speed
 from accident_reconstruction.scene_config import SCENE, SceneConfig
 from accident_reconstruction.time_axis import load_frame_times, time_axis_warning
@@ -99,7 +101,299 @@ def project_metric(
                 np.array([anchor], dtype=np.float32)
             )[0]
             metric[label][frame] = (float(point[0]), float(point[1]))
-    return metric
+    return refine_metric_from_contours(metric)
+
+
+# Reject the refined track if its PEAK speed exceeds the legacy peak by more than
+# this factor -- a phantom spike, not a real correction. 1.5x keeps a modestly
+# faster-but-more-faithful car while catching a narrow object (motorbike) whose
+# jumpy median-column anchor spikes the speed several-fold.
+_PEAK_SPEED_TOLERANCE = 1.5
+
+
+def _peak_speed_kmh(frames: list[int], positions: np.ndarray, fps: float) -> float:
+    """Peak windowed speed of a metric track, via the shared speed windowing.
+
+    The same estimator the reconstruction reports, so the guard rejects exactly
+    the artefact a user would see: a refined anchor that manufactures a speed
+    spike (typically across a tracking gap, which position jitter alone misses).
+    """
+    track = {
+        f: (float(positions[i][0]), float(positions[i][1]))
+        for i, f in enumerate(frames)
+    }
+    speeds = windowed_speed(track, fps, euclidean)
+    return max((s for _, s in speeds.values()), default=0.0)
+
+
+def refine_metric_from_contours(
+    metric: dict[str, dict[int, tuple[float, float]]],
+    scene: SceneConfig = SCENE,
+) -> dict[str, dict[int, tuple[float, float]]]:
+    """Improve anchors using the Stage-1 contact contours, in two layers.
+
+    The legacy anchor is the mask box's bottom-centre ``((x1+x2)//2, y2)``, which
+    is usually not a point on the car: rear-on it floats on the road below the
+    car, and on a turn its horizontal midpoint slides across the body. Both are
+    the same defect -- a box CORNER is not a body point -- and both distort the
+    trajectory (see :mod:`accident_reconstruction.ground_footprint`).
+
+    Layer 1 -- **scale-independent** (always, wherever a contour exists): replace
+    the box-corner anchor with :func:`ground_footprint.contour_anchor_px`, the
+    ground-contact point under the contour's own median column. It lands the
+    anchor ON the car in the image and, once projected, on the ground plane. It
+    assumes no vehicle size, so it is safe even where the homography under-scales
+    (the BMW CCTV): on BMW it cuts the image-plane anchor error from ~20 px to
+    ~3 px.
+
+    Layer 2 -- **scale-dependent** (optional, on top): where the homography is
+    metrically faithful and the vehicle is a boxy four-wheeler, snap to the fitted
+    footprint CENTRE (:func:`ground_footprint.fit_footprint_center`), removing the
+    residual view-dependent offset. Declines (keeps layer 1) otherwise, e.g. on
+    BMW's under-scaled projection.
+
+    Returns ``metric`` unchanged when the sidecar is absent or the transformer is
+    unset, so clips tracked before the sidecar existed keep their legacy anchor.
+
+    Args:
+        metric: Per-vehicle legacy metric positions by frame (used as the
+            per-frame fallback where a contour is missing).
+        scene: Active scene (its ``contact_contours_npz`` and ``vehicle_length_m``
+            drive the refinement).
+
+    Returns:
+        Per-vehicle metric positions by frame, refined where possible.
+    """
+    if VIEW_TRANSFORMER is None:
+        return metric
+    contours = gf.load_contours(scene.contact_contours_npz)
+    if not contours:
+        return metric
+
+    lengths = scene.vehicle_length_m or {}
+    refined: dict[str, dict[int, tuple[float, float]]] = {}
+    for label, track in metric.items():
+        per_frame = contours.get(label)
+        if not per_frame or len(track) < 2:
+            refined[label] = track  # no contour -> keep the legacy anchor
+            continue
+        frames = sorted(track)
+
+        # --- Layer 1: on-contour anchor (scale-independent), legacy as fallback.
+        positions = np.array([track[f] for f in frames], dtype=np.float64)
+        for i, frame in enumerate(frames):
+            contour = per_frame.get(frame)
+            if contour is None:
+                continue
+            anchor_px = gf.contour_anchor_px(contour)
+            if anchor_px is None:
+                continue
+            point = VIEW_TRANSFORMER.transform_points(
+                np.array([anchor_px], dtype=np.float32)
+            )[0]
+            positions[i] = (float(point[0]), float(point[1]))
+
+        # --- Layer 2: footprint-centre fit where the homography is scale-faithful.
+        positions = _footprint_centre_layer(
+            label, frames, positions, per_frame, lengths.get(label)
+        )
+
+        # --- Layer 3: Savitzky-Golay smoothing. Pixel-quantised contours leave a
+        # centimetre-scale jitter on the anchor; a quadratic-order SG filter sheds
+        # it while preserving the path's real shape (turns, collision motion) --
+        # unlike a moving average, which would round the corners we are trying to
+        # represent. This is the "plausible but faithful" trajectory the viewer
+        # and the workbench route draw.
+        positions = gf.savgol_smooth(frames, positions)
+
+        # --- No-regression guard (all-or-nothing per vehicle). The on-contour
+        # anchor helps WIDE objects (a car's box-corner sits far off the body),
+        # but for a NARROW one (a motorbike) the legacy anchor is already on the
+        # body and the contour's median column jumps frame to frame -- spiking the
+        # speed, usually across a tracking gap. Rather than special-case classes,
+        # keep the refined track only when it does not manufacture a peak speed
+        # far above the legacy one; otherwise legacy was better here, so keep it.
+        legacy_positions = np.array([track[f] for f in frames], dtype=np.float64)
+        refined_peak = _peak_speed_kmh(frames, positions, scene.fps)
+        legacy_peak = _peak_speed_kmh(frames, legacy_positions, scene.fps)
+        if refined_peak <= max(legacy_peak * _PEAK_SPEED_TOLERANCE, legacy_peak + 5.0):
+            refined[label] = {
+                frame: (float(positions[i][0]), float(positions[i][1]))
+                for i, frame in enumerate(frames)
+            }
+        else:
+            refined[label] = track
+    return refined
+
+
+def _footprint_centre_layer(
+    label: str,
+    frames: list[int],
+    positions: np.ndarray,
+    contours: dict[int, np.ndarray],
+    length_m: float | None,
+) -> np.ndarray:
+    """Snap to fitted footprint centres where the homography is scale-faithful.
+
+    Returns ``positions`` unchanged unless the vehicle is a boxy four-wheeler with
+    a known length AND enough frames pass the scale gate (all-or-nothing per
+    vehicle -- see :data:`ground_footprint.MIN_FITTED_FRACTION`).
+    """
+    size = gf.footprint_size(label, length_m)
+    if size is None:
+        return positions
+    fit_length_m, fit_width_m = size
+    fitted_positions = positions.copy()
+
+    # Heading (from the track) and centre (from the fit) are mutually dependent,
+    # so alternate: the layer-1 positions seed the heading, the fit refines the
+    # positions, and a second pass settles the heading on them.
+    accepted = 0
+    for _ in range(2):
+        headings = gf.headings_from_track(frames, fitted_positions)
+        accepted = 0
+        for i, frame in enumerate(frames):
+            contour = contours.get(frame)
+            heading = headings.get(frame)
+            if contour is None or heading is None:
+                continue
+            metric_pts = VIEW_TRANSFORMER.transform_points(contour.astype(np.float32))
+            centre = gf.fit_footprint_center(
+                metric_pts, heading, fit_length_m, fit_width_m
+            )
+            if centre is not None:
+                fitted_positions[i] = centre
+                accepted += 1
+
+    if accepted < gf.MIN_FITTED_FRACTION * len(frames):
+        return positions  # homography not faithful for this vehicle -> keep layer 1
+
+    # Final jitter smoothing is applied once, downstream (layer 3), to whichever
+    # anchor won -- so no per-layer smoothing here.
+    return fitted_positions
+
+
+# Fallback trace colours (BGR) for vehicles with no user-drawn box colour.
+_OVERLAY_FALLBACK_BGR = [
+    (7, 193, 255),
+    (243, 150, 33),
+    (80, 175, 76),
+    (99, 30, 233),
+    (176, 39, 156),
+]
+
+
+def _overlay_colors(scene: SceneConfig, labels: list[str]) -> dict[str, tuple]:
+    """Per-vehicle BGR draw colour, matching the workbench's box colours.
+
+    Reads the user-drawn ``vehicle_boxes.json`` (``bgr`` per object) so a vehicle's
+    overlay trace is the same colour as its tracking box; anything unlisted gets a
+    distinct fallback so same-class vehicles stay apart.
+    """
+    box_bgr: dict[str, tuple] = {}
+    path = scene.vehicle_boxes
+    if path.exists():
+        try:
+            data = json.loads(path.read_text())
+            for obj in data.get("objects", []) if isinstance(data, dict) else []:
+                name, bgr = obj.get("name"), obj.get("bgr")
+                if name and isinstance(bgr, (list, tuple)) and len(bgr) == 3:
+                    box_bgr[name] = tuple(int(c) for c in bgr)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {
+        label: box_bgr.get(label, _OVERLAY_FALLBACK_BGR[i % len(_OVERLAY_FALLBACK_BGR)])
+        for i, label in enumerate(labels)
+    }
+
+
+def write_reconstruction_overlay_video(
+    path: Path | None = None, scene: SceneConfig = SCENE
+) -> Path | None:
+    """Draw the Stage-2 refined + smoothed trajectory back onto the source video.
+
+    ``prompt_tracked_video`` (Stage 1) draws the LEGACY box-corner anchor; this
+    instead back-projects the Stage-2 metric trajectory -- the on-contour anchor,
+    footprint fit and Savitzky-Golay smoothing -- through the inverse homography,
+    so the path drawn ON the video matches the map/CSV/3D. Per vehicle it draws a
+    growing trace and the current anchor dot.
+
+    Args:
+        path: Output MP4 path; defaults to ``scene.reconstruction_overlay_video``.
+        scene: Active scene.
+
+    Returns:
+        The written path, or None if there is no calibration/tracks to draw.
+    """
+    if VIEW_TRANSFORMER is None or not scene.prompt_tracks_csv.exists():
+        return None
+    metric = project_metric(load_anchors(scene.prompt_tracks_csv))
+    if not metric:
+        return None
+
+    # Back-project each vehicle's metric track to pixels once.
+    pixels: dict[str, dict[int, tuple[float, float]]] = {}
+    for label, track in metric.items():
+        frames = sorted(track)
+        projected = VIEW_TRANSFORMER.inverse_transform_points(
+            np.array([track[f] for f in frames], dtype=np.float32)
+        )
+        pixels[label] = {f: tuple(projected[i]) for i, f in enumerate(frames)}
+    colors = _overlay_colors(scene, list(metric))
+
+    path = path or scene.reconstruction_overlay_video
+    path.parent.mkdir(parents=True, exist_ok=True)
+    capture = cv2.VideoCapture(str(scene.source_video))
+    fps = capture.get(cv2.CAP_PROP_FPS) or scene.fps
+    start, end = scene.resolved_start_frame, scene.resolved_end_frame
+    capture.set(cv2.CAP_PROP_POS_FRAMES, start)
+
+    writer: cv2.VideoWriter | None = None
+    trace: dict[str, list[tuple[int, int]]] = {label: [] for label in metric}
+    for frame_index in range(start, end + 1):
+        ok, frame = capture.read()
+        if not ok:
+            break
+        if writer is None:
+            h, w = frame.shape[:2]
+            writer = cv2.VideoWriter(
+                str(path), cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
+            )
+        for label in metric:
+            here = pixels[label].get(frame_index)
+            if here is None:
+                continue
+            point = (round(here[0]), round(here[1]))
+            trace[label].append(point)
+            color = colors[label]
+            if len(trace[label]) >= 2:
+                cv2.polylines(
+                    frame,
+                    [np.array(trace[label], np.int32)],
+                    False,
+                    color,
+                    2,
+                    cv2.LINE_AA,
+                )
+            cv2.circle(frame, point, 6, color, -1)
+            cv2.circle(frame, point, 7, (255, 255, 255), 1)
+            cv2.putText(
+                frame,
+                label,
+                (point[0] + 8, point[1] - 8),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                color,
+                2,
+                cv2.LINE_AA,
+            )
+        writer.write(frame)
+    capture.release()
+    if writer is None:
+        return None
+    writer.release()
+    ensure_readable_mp4(str(path))
+    return path
 
 
 def load_boxes(
@@ -810,6 +1104,16 @@ def main(csv_path: str = str(PROMPT_TRACKS_CSV)) -> None:
         # Print the traceback: this branch has silently swallowed import errors
         # before, so a one-line message is not enough to diagnose a real failure.
         print(f"(recognised figure skipped: {error})")
+        traceback.print_exc()
+
+    # Draw the refined + smoothed trajectory back onto the video (the workbench's
+    # tracked-video tab prefers this over the Stage-1 legacy-anchor overlay).
+    try:
+        overlay = write_reconstruction_overlay_video()
+        if overlay is not None:
+            print(f"Reconstruction overlay video: {overlay.resolve()}")
+    except Exception as error:  # optional viz -- never break the run
+        print(f"(overlay video skipped: {error})")
         traceback.print_exc()
 
     print(f"Impact frame: {impact_frame}")

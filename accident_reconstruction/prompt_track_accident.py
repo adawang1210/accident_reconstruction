@@ -24,8 +24,6 @@ Example:
 from __future__ import annotations
 
 import csv
-import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -37,59 +35,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from ultralytics.models.sam import SAM2VideoPredictor
 
-from accident_reconstruction.ffmpeg_util import find_ffmpeg
+from accident_reconstruction import ground_footprint as gf
+from accident_reconstruction.ffmpeg_util import ensure_readable_mp4
 from accident_reconstruction.scene_config import SCENE
 from accident_reconstruction.time_axis import (
     frame_time,
     probe_pts_times,
     time_axis_warning,
 )
-
-
-def ensure_readable_mp4(path: str) -> None:
-    """Re-encode a video to H.264 so headless OpenCV (and players) can read it.
-
-    The OpenCV ``mp4v`` writer in the venv produces files this headless build
-    cannot read back. When ffmpeg is available we transcode to H.264 yuv420p
-    in place; otherwise the original (still player-playable) file is left as is.
-
-    A transcode failure (disk full, missing encoder) is downgraded to a warning
-    rather than raised: this runs *after* the expensive SAM2 tracking, so an
-    exception here would discard a good result over a cosmetic re-encode. The
-    original file (already playable) is kept, matching the "no ffmpeg" path.
-
-    Args:
-        path: Path to the just-written video.
-    """
-    ffmpeg = find_ffmpeg()
-    if ffmpeg is None:
-        return
-    transcoded = f"{path}.h264.mp4"
-    try:
-        subprocess.run(  # noqa: S603 -- fixed ffmpeg args, no untrusted input
-            [
-                str(ffmpeg),
-                "-y",
-                "-loglevel",
-                "error",
-                "-i",
-                path,
-                "-c:v",
-                "libx264",
-                "-pix_fmt",
-                "yuv420p",
-                "-movflags",
-                "+faststart",
-                transcoded,
-            ],
-            check=True,
-        )
-    except subprocess.CalledProcessError as error:
-        print(f"[warn] ffmpeg re-encode failed ({error}); keeping original {path}.")
-        Path(transcoded).unlink(missing_ok=True)
-        return
-    os.replace(transcoded, path)
-
 
 # The user's input: one box per accident vehicle, in ORIGINAL (1280x720) pixels,
 # on ``start_frame``. Insertion order defines the prompt/mask order. (Seeded here
@@ -816,6 +769,9 @@ def main(
     writer: cv2.VideoWriter | None = None
     trace: dict[str, list[tuple[int, int]]] = {name: [] for name in names}
     rows: list[list[object]] = []
+    # Per-vehicle ground-contact contours -> sidecar npz for Stage 2's
+    # orientation-invariant footprint anchor (see ground_footprint).
+    contours: dict[str, dict[int, np.ndarray]] = {name: {} for name in names}
     for frame_index in range(start_frame, end_frame + 1):
         ok, frame = capture.read()
         if not ok:
@@ -831,6 +787,9 @@ def main(
             if record is None:
                 continue
             box, anchor, mask = record
+            contour = gf.subsample(gf.bottom_contour(mask))
+            if len(contour):
+                contours[name][frame_index] = contour
             color = INIT_VEHICLES[name]["bgr"]
             frame[mask] = (0.45 * np.array(color) + 0.55 * frame[mask]).astype(np.uint8)
             cv2.rectangle(frame, (box[0], box[1]), (box[2], box[3]), color, 2)
@@ -885,6 +844,10 @@ def main(
         )
         csv_writer.writerows(rows)
 
+    # Sidecar contours next to the CSV, so Stage 2 can fit footprint anchors.
+    contour_path = Path(tracks_csv_path).with_name("contact_contours.npz")
+    gf.save_contours(contour_path, contours)
+
     if writer is not None:
         writer.release()
         ensure_readable_mp4(target_video_path)
@@ -892,6 +855,8 @@ def main(
     counts = {name: len(per_vehicle[name]) for name in names}
     print(f"Annotated video: {Path(target_video_path).resolve()}")
     print(f"Tracks CSV: {Path(tracks_csv_path).resolve()} ({len(rows)} rows)")
+    n_contours = sum(len(by_frame) for by_frame in contours.values())
+    print(f"Contact contours: {contour_path.resolve()} ({n_contours} frames)")
     print(f"Frames tracked per vehicle: {counts}")
 
 

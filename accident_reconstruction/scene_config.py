@@ -137,6 +137,31 @@ class SceneConfig:
         return self.artifact_dir / "prompt_tracks.csv"
 
     @property
+    def reconstruction_overlay_video(self) -> Path:
+        """Stage-2 overlay video: the refined + smoothed trajectory drawn on frames.
+
+        Unlike ``prompt_tracked_video`` (Stage 1, which draws the legacy anchor),
+        this back-projects the Stage-2 trajectory (on-contour anchor, footprint
+        fit, Savitzky-Golay smoothing) onto the source frames, so the video's drawn
+        path matches the map/CSV. Written by
+        ``auto_reconstruct.write_reconstruction_overlay_video``.
+        """
+        return self.artifact_dir.parent / f"{self.name}_reconstruction_overlay.mp4"
+
+    @property
+    def contact_contours_npz(self) -> Path:
+        """Per-frame ground-contact contours written by ``prompt_track_accident``.
+
+        Sidecar to :attr:`prompt_tracks_csv`: the mask's bottom contour per vehicle
+        per frame, in original pixels. Stage 2 projects it through the homography to
+        fit an orientation-invariant footprint anchor (see
+        :mod:`accident_reconstruction.ground_footprint`). Optional -- absent for
+        clips tracked before the sidecar existed, in which case Stage 2 keeps the
+        legacy bbox bottom-centre anchor.
+        """
+        return self.artifact_dir / "contact_contours.npz"
+
+    @property
     def out_kml(self) -> Path:
         return self.artifact_dir.parent / f"{self.name}_route_auto.kml"
 

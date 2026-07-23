@@ -569,6 +569,66 @@ class ViewTransformer:
         reshaped = undistort_to_normalized(points, self.distortion).reshape(-1, 1, 2)
         return cv2.perspectiveTransform(reshaped, self.m).reshape(-1, 2)
 
+    def inverse_transform_points(self, points: np.ndarray) -> np.ndarray:
+        """Map ``(n, 2)`` metric ground points back to camera pixels.
+
+        The inverse of :meth:`transform_points`: apply the inverse homography to
+        reach undistorted normalised coords, then re-apply the lens distortion to
+        land on real pixels. Used to draw a metric trajectory back onto the video.
+
+        Args:
+            points: Array of shape ``(n, 2)`` in metric ``(east_m, north_m)``.
+
+        Returns:
+            Array of shape ``(n, 2)`` in camera pixels.
+        """
+        points = np.asarray(points, dtype=np.float32)
+        if points.size == 0:
+            return points
+        inverse = np.linalg.inv(self.m)
+        normalized = cv2.perspectiveTransform(
+            points.reshape(-1, 1, 2), inverse
+        ).reshape(-1, 2)
+        return _redistort_from_normalized(normalized, self.distortion)
+
+
+def _redistort_from_normalized(
+    normalized: np.ndarray, distortion: dict | None
+) -> np.ndarray:
+    """Inverse of :func:`undistort_to_normalized`: normalised coords -> pixels.
+
+    With no lens model the normalised coords are already the pixels. Otherwise the
+    forward map is ``xu = xn * (1 + k1 * r^2)``; recover ``xn`` from ``xu`` by a few
+    fixed-point iterations (converges for the mild ``k1`` a single-coefficient CCTV
+    model uses), then scale back to pixels by ``f`` and the centre.
+
+    Examples:
+        ```python
+        import numpy as np
+        # Round-trips undistort_to_normalized for a mild k1.
+        d = {"k1": -0.2, "cx": 640, "cy": 360, "f": 700}
+        px = np.array([[820.0, 300.0]])
+        norm = undistort_to_normalized(px, d)
+        _redistort_from_normalized(norm, d).round(2).tolist()
+        # [[820.0, 300.0]]
+        ```
+    """
+    pts = np.asarray(normalized, dtype=np.float64)
+    if not distortion:
+        return pts.astype(np.float32)
+    k1, cx, cy, f = (
+        distortion["k1"],
+        distortion["cx"],
+        distortion["cy"],
+        distortion["f"],
+    )
+    xu, yu = pts[:, 0], pts[:, 1]
+    xn, yn = xu.copy(), yu.copy()
+    for _ in range(10):
+        scale = 1.0 + k1 * (xn * xn + yn * yn)
+        xn, yn = xu / scale, yu / scale
+    return np.stack([xn * f + cx, yn * f + cy], axis=1).astype(np.float32)
+
 
 # Active-scene transformer + calibration state (populated by _load_calibration).
 VIEW_TRANSFORMER: ViewTransformer | None = None

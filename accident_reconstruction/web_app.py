@@ -580,11 +580,17 @@ def _result_files(scene) -> dict:
     recognised_figure = scene.out_figure.with_name(f"{scene.name}_route_recognized.png")
     recognised_kml = scene.out_kml.with_name(f"{scene.name}_route_recognized.kml")
     recognised_csv = scene.out_csv.with_name(f"{scene.name}_route_recognized.csv")
+    # The tracked video prefers the Stage-2 overlay (refined + smoothed trajectory
+    # drawn on the frames) when present, falling back to the Stage-1 tracker video
+    # (which draws the legacy box-corner anchor).
+    overlay_video = scene.reconstruction_overlay_video
     candidates = {
         "figure": recognised_figure if recognised_figure.exists() else scene.out_figure,
         "kml": recognised_kml if recognised_kml.exists() else scene.out_kml,
         "csv": recognised_csv if recognised_csv.exists() else scene.out_csv,
-        "tracked": scene.prompt_tracked_video,
+        "tracked": (
+            overlay_video if overlay_video.exists() else scene.prompt_tracked_video
+        ),
         "reconstruction": scene.out_csv.with_name(f"{scene.name}_reconstruction.json"),
     }
     return {kind: path for kind, path in candidates.items() if path.exists()}
