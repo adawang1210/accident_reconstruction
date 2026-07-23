@@ -217,12 +217,23 @@ def refine_metric_from_contours(
         refined_peak = _peak_speed_kmh(frames, positions, scene.fps)
         legacy_peak = _peak_speed_kmh(frames, legacy_positions, scene.fps)
         if refined_peak <= max(legacy_peak * _PEAK_SPEED_TOLERANCE, legacy_peak + 5.0):
-            refined[label] = {
-                frame: (float(positions[i][0]), float(positions[i][1]))
-                for i, frame in enumerate(frames)
-            }
+            chosen_frames, chosen_positions = frames, positions
         else:
-            refined[label] = track
+            chosen_frames = frames
+            chosen_positions = legacy_positions
+
+        # --- Layer 4: bridge SAM2's tracking gaps on STRAIGHT runs by
+        # interpolation, so the trajectory (and the overlay video's line) is
+        # continuous instead of vanishing where the tracker dropped the object.
+        # A gap spanning a TURN is left open -- a straight line would cut the
+        # corner (see ground_footprint.interpolate_straight_gaps).
+        filled_frames, filled_positions, _ = gf.interpolate_straight_gaps(
+            chosen_frames, chosen_positions
+        )
+        refined[label] = {
+            frame: (float(filled_positions[i][0]), float(filled_positions[i][1]))
+            for i, frame in enumerate(filled_frames)
+        }
     return refined
 
 
@@ -271,6 +282,50 @@ def _footprint_centre_layer(
     # Final jitter smoothing is applied once, downstream (layer 3), to whichever
     # anchor won -- so no per-layer smoothing here.
     return fitted_positions
+
+
+def _dashed_line(
+    frame: np.ndarray,
+    p0: tuple[int, int],
+    p1: tuple[int, int],
+    color: tuple,
+    thickness: int = 2,
+    dash: int = 10,
+    gap: int = 8,
+) -> None:
+    """Draw a dashed line p0->p1 (cv2 has no dashed polyline)."""
+    start = np.array(p0, dtype=np.float64)
+    vec = np.array(p1, dtype=np.float64) - start
+    length = float(np.hypot(*vec))
+    if length < 1.0:
+        return
+    unit = vec / length
+    pos = 0.0
+    while pos < length:
+        a = start + unit * pos
+        b = start + unit * min(pos + dash, length)
+        cv2.line(
+            frame,
+            (int(a[0]), int(a[1])),
+            (int(b[0]), int(b[1])),
+            color,
+            thickness,
+            cv2.LINE_AA,
+        )
+        pos += dash + gap
+
+
+def _draw_trace(
+    frame: np.ndarray, points: list[tuple[int, tuple[int, int]]], color: tuple
+) -> None:
+    """Draw a per-frame trace: solid between consecutive frames, dashed across a
+    frame gap (an unbridged tracking dropout, e.g. the open turn gap)."""
+    for k in range(1, len(points)):
+        (f0, p0), (f1, p1) = points[k - 1], points[k]
+        if f1 - f0 <= 1:
+            cv2.line(frame, p0, p1, color, 2, cv2.LINE_AA)
+        else:
+            _dashed_line(frame, p0, p1, color)
 
 
 # Fallback trace colours (BGR) for vehicles with no user-drawn box colour.
@@ -349,7 +404,12 @@ def write_reconstruction_overlay_video(
     capture.set(cv2.CAP_PROP_POS_FRAMES, start)
 
     writer: cv2.VideoWriter | None = None
-    trace: dict[str, list[tuple[int, int]]] = {label: [] for label in metric}
+    # Trace stores (frame, point) so a jump in frame numbers -- a gap SAM2 never
+    # recovered, e.g. the through-the-turn one that straight-line interpolation
+    # deliberately leaves open -- is drawn DASHED, and the rest solid.
+    trace: dict[str, list[tuple[int, tuple[int, int]]]] = {
+        label: [] for label in metric
+    }
     for frame_index in range(start, end + 1):
         ok, frame = capture.read()
         if not ok:
@@ -361,32 +421,25 @@ def write_reconstruction_overlay_video(
             )
         for label in metric:
             here = pixels[label].get(frame_index)
-            if here is None:
-                continue
-            point = (round(here[0]), round(here[1]))
-            trace[label].append(point)
-            color = colors[label]
-            if len(trace[label]) >= 2:
-                cv2.polylines(
+            if here is not None:
+                trace[label].append((frame_index, (round(here[0]), round(here[1]))))
+            # Draw the whole trace EVERY frame so the line persists through frames
+            # with no new point (the open turn gap), instead of flickering off.
+            _draw_trace(frame, trace[label], colors[label])
+            if here is not None:
+                point = trace[label][-1][1]
+                cv2.circle(frame, point, 6, colors[label], -1)
+                cv2.circle(frame, point, 7, (255, 255, 255), 1)
+                cv2.putText(
                     frame,
-                    [np.array(trace[label], np.int32)],
-                    False,
-                    color,
+                    label,
+                    (point[0] + 8, point[1] - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    colors[label],
                     2,
                     cv2.LINE_AA,
                 )
-            cv2.circle(frame, point, 6, color, -1)
-            cv2.circle(frame, point, 7, (255, 255, 255), 1)
-            cv2.putText(
-                frame,
-                label,
-                (point[0] + 8, point[1] - 8),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                color,
-                2,
-                cv2.LINE_AA,
-            )
         writer.write(frame)
     capture.release()
     if writer is None:

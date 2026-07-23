@@ -326,6 +326,41 @@ def test_savgol_does_not_blend_across_a_gap() -> None:
     assert smoothed[3].tolist() == [3.0, 9.0]  # no neighbours within 3 frames
 
 
+def test_interpolate_fills_a_straight_gap() -> None:
+    """A gap on a straight run is linearly filled and the samples flagged."""
+    frames = [0, 1, 5, 6]
+    pos = np.array([[0.0, 0], [1, 0], [5, 0], [6, 0]])
+
+    new_frames, new_pos, interp = gf.interpolate_straight_gaps(frames, pos)
+
+    assert new_frames == [0, 1, 2, 3, 4, 5, 6]
+    assert interp == [False, False, True, True, True, False, False]
+    # filled points sit on the straight line
+    assert np.allclose(new_pos[2:5], [[2, 0], [3, 0], [4, 0]])
+
+
+def test_interpolate_leaves_a_turn_gap_open() -> None:
+    """A gap where the heading swings (a turn) is NOT filled -- no corner-cutting."""
+    # Heading ~east before the gap, ~north after it: a 90-degree turn across it.
+    frames = [0, 1, 10, 11]
+    pos = np.array([[0.0, 0], [1, 0], [5, 4], [5, 5]])
+
+    new_frames, _, interp = gf.interpolate_straight_gaps(frames, pos)
+
+    assert new_frames == frames  # unchanged
+    assert not any(interp)
+
+
+def test_interpolate_declines_an_overlong_gap() -> None:
+    """Even a straight gap longer than the cap is left open (too much invented)."""
+    frames = [0, 1, 100, 101]
+    pos = np.array([[0.0, 0], [1, 0], [100, 0], [101, 0]])
+
+    new_frames, _, _ = gf.interpolate_straight_gaps(frames, pos, max_gap_frames=40)
+
+    assert new_frames == frames
+
+
 def test_footprint_size_derives_width_from_length() -> None:
     """Scenes configure a length; the width follows from the class ratio."""
     assert gf.footprint_size("car", 4.5) == (4.5, 1.8)

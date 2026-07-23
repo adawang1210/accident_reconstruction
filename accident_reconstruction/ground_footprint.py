@@ -47,6 +47,15 @@ MAX_CONTOUR_POINTS = 64
 # anchor rather than getting a confidently wrong one.
 MIN_CONTOUR_POINTS = 8
 
+# A tracking gap is bridged by straight-line interpolation only when the heading
+# just before and just after it agree within this many degrees -- i.e. the
+# vehicle went straight across the gap. A larger heading change means it TURNED in
+# the gap, where a straight line would cut the corner, so that gap is left open
+# (honest: the pipeline never saw the cornering path). See auto_reconstruct.
+GAP_FILL_MAX_TURN_DEG = 25.0
+# Never invent more than this many consecutive frames, even on a straight run.
+GAP_FILL_MAX_FRAMES = 40
+
 # The projected contour's major extent must land in this band, as a fraction of
 # the footprint LENGTH, for the fit to be trustworthy.
 #
@@ -492,6 +501,96 @@ def savgol_smooth(
         coef, *_ = np.linalg.lstsq(design, points[idx], rcond=None)
         out[i] = coef[-1]
     return out
+
+
+def _segment_heading(a: NDArray[np.float64], b: NDArray[np.float64]) -> float | None:
+    """Heading of a->b in radians, or None if the two points barely differ."""
+    step = b - a
+    return float(np.arctan2(step[1], step[0])) if np.hypot(*step) >= 0.05 else None
+
+
+def interpolate_straight_gaps(
+    frames: list[int],
+    positions: NDArray[np.float64],
+    *,
+    max_turn_deg: float = GAP_FILL_MAX_TURN_DEG,
+    max_gap_frames: int = GAP_FILL_MAX_FRAMES,
+    window: int = 3,
+) -> tuple[list[int], NDArray[np.float64], list[bool]]:
+    """Fill a track's tracking gaps by straight-line interpolation, but ONLY where
+    the vehicle went straight across the gap.
+
+    SAM2 drops the object for stretches of frames (motion blur, the car turning
+    out of a learned appearance, occlusion). A gap where the heading just before
+    and just after agree (within ``max_turn_deg``) is a straight run, so the
+    missing frames are linearly interpolated -- the trajectory is continuous and
+    the assumption (constant heading + speed over a few frames) is safe. A gap
+    where the heading swings is a TURN: a straight line would cut the corner, so
+    it is left open rather than inventing a cornering path the pipeline never saw.
+
+    Args:
+        frames: Tracked frame numbers, ascending (gaps allowed).
+        positions: ``(n, 2)`` metric positions matching ``frames``.
+        max_turn_deg: Heading change across a gap above which it is treated as a
+            turn and left open.
+        max_gap_frames: Never interpolate a gap longer than this many frames.
+        window: Samples each side used to estimate the local heading.
+
+    Returns:
+        ``(new_frames, new_positions, interpolated)`` -- ``interpolated[i]`` is
+        True for a synthesised (gap-filled) sample, False for a tracked one.
+
+    Examples:
+        ```python
+        import numpy as np
+        # A straight run due east with frame 2..4 missing -> filled.
+        frames = [0, 1, 5, 6]
+        pos = np.array([[0.0, 0], [1, 0], [5, 0], [6, 0]])
+        nf, np_, interp = interpolate_straight_gaps(frames, pos)
+        nf
+        # [0, 1, 2, 3, 4, 5, 6]
+        [bool(x) for x in interp]
+        # [False, False, True, True, True, False, False]
+        ```
+    """
+    positions = np.asarray(positions, dtype=np.float64)
+    n = len(frames)
+    if n < 2:
+        return list(frames), positions.copy(), [False] * n
+
+    out_frames: list[int] = []
+    out_pos: list[NDArray[np.float64]] = []
+    interpolated: list[bool] = []
+    max_turn = np.radians(max_turn_deg)
+
+    for i in range(n):
+        out_frames.append(int(frames[i]))
+        out_pos.append(positions[i])
+        interpolated.append(False)
+        if i + 1 >= n:
+            continue
+        a, b = int(frames[i]), int(frames[i + 1])
+        missing = b - a - 1
+        if not (1 <= missing <= max_gap_frames):
+            continue
+        before = _segment_heading(positions[max(0, i - window)], positions[i])
+        after = _segment_heading(
+            positions[i + 1], positions[min(n - 1, i + 1 + window)]
+        )
+        # A turn if both headings are defined and disagree beyond the threshold.
+        # If either is undefined (the vehicle was ~stationary), the tiny straight
+        # bridge is harmless, so treat it as straight.
+        if before is not None and after is not None:
+            delta = abs((after - before + np.pi) % (2 * np.pi) - np.pi)
+            if delta > max_turn:
+                continue  # turn -> leave the gap open
+        for frame in range(a + 1, b):
+            t = (frame - a) / (b - a)
+            out_frames.append(frame)
+            out_pos.append(positions[i] * (1 - t) + positions[i + 1] * t)
+            interpolated.append(True)
+
+    return out_frames, np.array(out_pos, dtype=np.float64), interpolated
 
 
 # The rigid-rectangle footprint model only describes boxy four-wheelers. A
