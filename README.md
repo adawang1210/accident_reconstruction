@@ -16,12 +16,30 @@
       → ⑥ 輸出 KML / CSV / 地圖圖片
 ```
 
-詳細架構、每一步說明與所有參數，見 [`docs/`](docs/) 文件：
+速度與位置以這條 2D homography 管線為準；其餘（軌跡精修、3D 場景、前端）都是圍繞它的呈現。
 
-- [`docs/README.md`](docs/README.md) — 完整使用說明
-- [`docs/PROJECT_SUMMARY.md`](docs/PROJECT_SUMMARY.md) — 專案進度與操作紀錄
-- [`docs/ACCIDENT_2D_RECONSTRUCTION.md`](docs/ACCIDENT_2D_RECONSTRUCTION.md) — 永康場景的技術細節
-- [`docs/3D_RECONSTRUCTION.md`](docs/3D_RECONSTRUCTION.md) — 3D 場景重建（深度 splat 背景 + CAD 路面模型）
+---
+
+## 系統組成（各部分一覽）
+
+本 repo 是「一條 2D 管線 + 圍繞它的呈現層」。各部分與其詳細文件：
+
+| 部分 | 做什麼 | 程式 | 詳細文件 |
+|---|---|---|---|
+| **2D 重建管線** | 影片 → 追蹤 → 投影 → 撞擊/對齊 → KML/CSV/圖 | `accident_reconstruction/` | [`docs/README.md`](docs/README.md)、[`ACCIDENT_2D_RECONSTRUCTION.md`](docs/ACCIDENT_2D_RECONSTRUCTION.md) |
+| **Web 工作台** | 五步驟 UI 收整條管線，磁碟讀結果 | `web_app.py` | [`docs/README.md`](docs/README.md) §工作台 |
+| **軌跡精修** | 在地輪廓 anchor、Savitzky-Golay 平滑、空缺補值、Stage-2 疊加影片 | `ground_footprint.py`、`auto_reconstruct.py` | [`docs/summary.md`](docs/summary.md) |
+| **車速校正**（Path A） | 方向感知的縱向尺度校正（後視誠實棄權） | `auto_reconstruct.py` | [`docs/summary.md`](docs/summary.md) §車速 |
+| **3D 場景重建** | 深度 splat 背景 + CAD 路面模型 | `depth_backdrop.py`、`self_calibration.py`※ | [`docs/3D_RECONSTRUCTION.md`](docs/3D_RECONSTRUCTION.md) |
+| **前端 3D 檢視器** | Three.js/R3F 回放軌跡＋底圖（OSM/Google tiles/splat） | `frontend/` | [`frontend/README.md`](frontend/README.md)、[`SPLAT_NOTES.md`](frontend/SPLAT_NOTES.md) |
+| **資料交換格式** | `reconstruction.json` schema（給前端） | — | [`docs/frontend_api.md`](docs/frontend_api.md) |
+
+※ CAD 線在未併入的 branch `accident-scene-cad-modeling-5aaa03` 上，見 3D 文件。
+
+**其他文件**：[`DATA.md`](docs/DATA.md)（各場景來源/校正/殘差）、
+[`PROJECT_SUMMARY.md`](docs/PROJECT_SUMMARY.md)（進度紀錄）、
+[`HANDOFF.md`](docs/HANDOFF.md)（交接續作）、[`TECH_REVIEW.md`](docs/TECH_REVIEW.md)（技術審查）、
+[`SCENE_NOTES.md`](frontend/SCENE_NOTES.md)（3D 底圖/Google tiles 踩雷）。
 
 ---
 
@@ -84,6 +102,9 @@ uv sync                 # 或 pip install -e .
 # 或用命令列跑完整 pipeline
 ACCIDENT_SCENE=keelung_xinwu_yier \
     .venv/bin/python -m accident_reconstruction.run_pipeline
+
+# 前端 3D 檢視器（回放軌跡；先 npm run sync:scenes 帶入 data/ 的重建結果）
+cd frontend && npm install && npm run dev   # http://localhost:5173
 ```
 
 > `sam2.1_t.pt`（SAM2 Tiny 權重）由 ultralytics 於**首次執行時自動下載**，不需手動準備、也不入庫。
@@ -118,13 +139,22 @@ uv run pre-commit install
 ## 專案結構
 
 ```
-accident_reconstruction/   可 import 的核心 pipeline 套件（純程式碼，見 docs/README.md）
-docs/                      文件（使用說明、進度、技術細節、DATA.md 資料清單）
-data/                      影片來源 + 各場景校正/追蹤/輸出（本地，不入庫）
+accident_reconstruction/   可 import 的核心 pipeline 套件（2D 重建 + 軌跡精修 + 3D splat 背景）
+  ├ prompt_track_accident.py   Stage 1：SAM2 追蹤 → anchors + 接地輪廓
+  ├ auto_reconstruct.py        Stage 2：投影 + 撞擊 + 軌跡精修 + 疊加影片
+  ├ ground_footprint.py        在地 anchor / 平滑 / 空缺補值
+  ├ depth_backdrop.py          3D 深度 splat 背景（線 A）
+  └ web_app.py                 Web 工作台（FastAPI）
+frontend/                  Three.js/R3F 3D 檢視器（回放軌跡；SPLAT_NOTES.md / SCENE_NOTES.md）
+docs/                      文件（使用說明、進度、2D/3D 技術細節、summary.md、DATA.md）
+data/                      影片來源 + 各場景校正/追蹤/輸出/3D 產物（本地，不入庫）
 pyproject.toml             套件與工具設定
 uv.lock / .python-version  鎖定的依賴與 Python 版本（協作可重現）
 sam2.1_t.pt                SAM2 追蹤權重（自動下載，不入庫）
 ```
+
+> CAD 路面模型（線 B：`self_calibration.py`、`frontend/src/scene/RoadCad.tsx`）在未併入的
+> branch `accident-scene-cad-modeling-5aaa03` 上——見 [`docs/3D_RECONSTRUCTION.md`](docs/3D_RECONSTRUCTION.md)。
 
 ---
 
