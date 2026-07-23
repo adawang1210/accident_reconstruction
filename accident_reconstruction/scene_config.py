@@ -71,6 +71,12 @@ class SceneConfig:
             frames and prints the local scale factor (projected length / real
             length), so an under-scaled homography (the main speed-underestimate
             cause) is quantified. It does NOT change any speed or position.
+        vehicle_width_m: ``{label: width_m}`` known real width of a vehicle (e.g.
+            ``{"car": 1.8}``). Optional companion to ``vehicle_length_m`` used only
+            to label the direction-aware scale check: it lets the diagnostic tell a
+            lateral (across-road, box width) measurement from a longitudinal
+            (along-travel, box length) one on rear/head-on CCTV. Not required for
+            the speed correction, which uses the length along the travel direction.
     """
 
     name: str
@@ -93,6 +99,7 @@ class SceneConfig:
     true_car_start_latlon: tuple[float, float] | None = None
     true_vehicle_starts: dict | None = None
     vehicle_length_m: dict | None = None
+    vehicle_width_m: dict | None = None
 
     # --- shared video folder paths ------------------------------------------
     def video_path(self, suffix: str) -> Path:
@@ -318,6 +325,7 @@ class SceneConfig:
             "true_car_start_latlon": latlon(self.true_car_start_latlon),
             "true_vehicle_starts": self.true_vehicle_starts,
             "vehicle_length_m": self.vehicle_length_m,
+            "vehicle_width_m": self.vehicle_width_m,
         }
 
     @classmethod
@@ -347,6 +355,7 @@ class SceneConfig:
             true_car_start_latlon=latlon(data.get("true_car_start_latlon")),
             true_vehicle_starts=data.get("true_vehicle_starts"),
             vehicle_length_m=data.get("vehicle_length_m"),
+            vehicle_width_m=data.get("vehicle_width_m"),
         )
 
 
@@ -394,6 +403,7 @@ PRE_IMPACT_MOTORCYCLE = SceneConfig(
     # Known real lengths (diagnostic only) -- a sedan and a scooter -- so the local
     # homography scale is quantified against them; does not change speeds.
     vehicle_length_m={"car": 4.7, "motorcycle": 1.9},
+    vehicle_width_m={"car": 1.8, "motorcycle": 0.8},
 )
 
 
@@ -454,6 +464,7 @@ KEELUNG_XINWU_YIER = SceneConfig(
     # Known real lengths (diagnostic only): a saloon taxi and a police sedan. Used
     # to print the local homography scale factor, not to alter speeds.
     vehicle_length_m={"taxi": 4.7, "police_car": 4.8},
+    vehicle_width_m={"taxi": 1.8, "police_car": 1.9},
 )
 
 

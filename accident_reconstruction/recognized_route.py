@@ -37,8 +37,10 @@ from accident_reconstruction.auto_reconstruct import (
     load_anchors,
     project_metric,
     resolve_impact_frame,
+    speed_correction_caption,
     speed_reliability,
     speed_reliability_caption,
+    speed_scale_corrections,
     windowed_motion,
 )
 from accident_reconstruction.birdseye_manual_annotation import (
@@ -255,6 +257,9 @@ def build_reconstruction() -> dict:
     times = load_frame_times(SCENE.prompt_tracks_csv)
     # Speed consistent with these positions, timed by real PTS when available.
     motion = aligned_motion(paths, fps, times)
+    # Path A: recover the along-road (longitudinal) scale from a known vehicle
+    # length where the view supports it; 1.0 (no change) where it cannot.
+    corrections = speed_scale_corrections(SCENE.prompt_tracks_csv)
     origin = ORIGIN_LATLON
 
     def to_xz(lat: float, lon: float) -> tuple[float, float]:
@@ -267,6 +272,7 @@ def build_reconstruction() -> dict:
     for index, (label, track) in enumerate(paths.items()):
         display = _display_for(label, index)
         speeds = motion.get(label, {})
+        factor = corrections.get(label, (1.0, ""))[0]
         samples = []
         for frame in sorted(track):
             lat, lon = track[frame]
@@ -279,7 +285,7 @@ def build_reconstruction() -> dict:
                     "z_m": round(north, 3),
                     "lat": round(lat, 7),
                     "lon": round(lon, 7),
-                    "speed_kmh": round(speeds.get(frame, (0.0, 0.0))[1], 1),
+                    "speed_kmh": round(speeds.get(frame, (0.0, 0.0))[1] * factor, 1),
                     "is_impact": frame == impact_frame,
                 }
             )
@@ -322,6 +328,10 @@ def build_reconstruction() -> dict:
         "vehicles": vehicles,
         "roads": roads,
         "speed_reliability": speed_reliability(),
+        "speed_correction": {
+            label: {"factor": round(factor, 3), "reason": reason}
+            for label, (factor, reason) in corrections.items()
+        },
     }
 
 
@@ -447,8 +457,13 @@ def write_recognized_figure(figure_path: Path | None = None) -> Path | None:
         (60, 60, 60),
     )
     # Speed-trust caption (GCP span + trajectory hull coverage) in the corner so a
-    # compressed / extrapolated reading is visible on the figure itself.
-    _label(draw, (12, 34), speed_reliability_caption(), 14, (150, 90, 60))
+    # compressed / extrapolated reading is visible on the figure itself; append the
+    # Path A longitudinal correction note when one was applied.
+    caption = speed_reliability_caption()
+    correction_note = speed_correction_caption()
+    if correction_note:
+        caption = f"{caption}；{correction_note}"
+    _label(draw, (12, 34), caption, 14, (150, 90, 60))
 
     figure_path.parent.mkdir(parents=True, exist_ok=True)
     image.save(str(figure_path))
@@ -515,15 +530,24 @@ def write_recognized_csv(csv_path: Path | None = None) -> Path | None:
         for label, track in original.items()
     }
     impact_frame = resolve_impact_frame(SCENE, original)
-    # Leading ``#`` comment carries the speed-reliability note; the web map skips
-    # ``#`` lines, so line 1 stays parseable as the column header for older readers.
-    lines = [f"# {speed_reliability_caption()}", ROUTE_CSV_HEADER]
+    # Path A longitudinal speed correction (1.0 where the view cannot recover it).
+    corrections = speed_scale_corrections(SCENE.prompt_tracks_csv)
+    # Leading ``#`` comment carries the speed-reliability note (plus any applied
+    # scale correction); the web map skips ``#`` lines, so line 2 stays parseable
+    # as the column header for older readers.
+    caption = speed_reliability_caption()
+    correction_note = speed_correction_caption(corrections)
+    if correction_note:
+        caption = f"{caption}；{correction_note}"
+    lines = [f"# {caption}", ROUTE_CSV_HEADER]
     for label, track in _recognized_metric().items():
+        factor = corrections.get(label, (1.0, ""))[0]
         for frame in sorted(track):
             ll = metric_to_latlon(track[frame])
             if ll is None:
                 continue
-            speed = motion[label][frame][1] if frame in motion.get(label, {}) else 0.0
+            raw = motion[label][frame][1] if frame in motion.get(label, {}) else 0.0
+            speed = raw * factor
             lines.append(route_csv_row(frame, label, ll[0], ll[1], speed, impact_frame))
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     csv_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

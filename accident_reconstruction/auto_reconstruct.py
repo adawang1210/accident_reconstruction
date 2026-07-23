@@ -538,6 +538,199 @@ def print_length_sanity(csv_path: Path = PROMPT_TRACKS_CSV) -> None:
         print(f"  {label} (real {real_length_m:.1f} m) -> {readout}")
 
 
+# --- Direction-aware speed-scale correction (Path A) --------------------------
+# A known real length only recovers the SPEED scale when it is measured ALONG the
+# travel direction. On a side/oblique view the vehicle's box long axis is its
+# length (~ its heading ~ its travel direction), so projecting that axis through
+# the homography yields the LONGITUDINAL scale that speed depends on -- and its
+# reciprocal is a valid speed multiplier. On a rear/head-on view the long axis is
+# the WIDTH (lateral); the anisotropic homography scales lateral distance
+# differently from along-road distance, so a width measurement CANNOT recover
+# speed. There we abstain (factor 1.0) instead of emitting a wrong multiplier.
+# The box long axis counts as travel-aligned within this angle of the travel dir.
+SCALE_ALIGNED_COS = 0.87  # cos(30 degrees)
+# Reject the correction when the per-frame longitudinal scales disagree this much
+# (coefficient of variation): an inconsistent scale is depth-driven foreshortening
+# / extrapolation, not the uniform under-scale a single multiplier can fix.
+SCALE_MAX_CV = 0.30
+# Need at least this many travel-aligned samples to trust the median.
+SCALE_MIN_SAMPLES = 2
+# Clamp the multiplier so a degenerate projection cannot invent an absurd speed.
+SCALE_MIN_FACTOR, SCALE_MAX_FACTOR = 0.2, 25.0
+# Ignore near-stationary frames whose travel direction is ill-defined.
+SCALE_MIN_TRAVEL_M = 0.15
+
+
+def _metric_travel_dirs(
+    metric_by_frame: dict[int, tuple[float, float]], frames: list[int]
+) -> dict[int, np.ndarray | None]:
+    """Unit travel direction (metric plane) at each frame, or None when stationary.
+
+    The direction at a frame is the normalized displacement between its nearest
+    earlier and later tracked frames, so it is robust to single-frame jitter and
+    to gaps. Returns None where that displacement is below ``SCALE_MIN_TRAVEL_M``
+    (the vehicle is not moving, so "along travel" is meaningless there).
+
+    Args:
+        metric_by_frame: One vehicle's ``{frame: (east_m, north_m)}`` ground track.
+        frames: Sorted frames to evaluate.
+
+    Returns:
+        ``{frame: unit_vector | None}``.
+    """
+    order = sorted(metric_by_frame)
+    index = {f: i for i, f in enumerate(order)}
+    out: dict[int, np.ndarray | None] = {}
+    for frame in frames:
+        i = index.get(frame)
+        if i is None:
+            out[frame] = None
+            continue
+        prev_f = order[i - 1] if i > 0 else frame
+        next_f = order[i + 1] if i + 1 < len(order) else frame
+        delta = np.subtract(metric_by_frame[next_f], metric_by_frame[prev_f])
+        norm = float(np.hypot(*delta))
+        out[frame] = (delta / norm) if norm >= SCALE_MIN_TRAVEL_M else None
+    return out
+
+
+def longitudinal_scale_correction(
+    boxes_by_frame: dict[int, tuple[float, float, float, float]],
+    anchors_by_frame: dict[int, tuple[float, float]],
+    project,
+    real_length_m: float,
+    positions: int = 7,
+) -> tuple[float | None, str]:
+    """Speed multiplier from a travel-aligned known length (Path A), or abstain.
+
+    At evenly sampled frames, project the box long axis through ``project`` and
+    compare its direction to the vehicle's local travel direction. When the axis
+    is travel-aligned (within :data:`SCALE_ALIGNED_COS`) it measures the vehicle's
+    LENGTH along the road, so ``projected_length / real_length_m`` is the local
+    longitudinal scale; its reciprocal corrects the (identically under-scaled)
+    speed. The correction is returned only when several such samples agree (their
+    coefficient of variation is under :data:`SCALE_MAX_CV`); otherwise the view is
+    lateral (rear/head-on) or the scale is depth-driven and we return ``None`` --
+    an honest abstain rather than a wrong number.
+
+    Args:
+        boxes_by_frame: One vehicle's ``{frame: (x1, y1, x2, y2)}`` pixel boxes.
+        anchors_by_frame: The same vehicle's ``{frame: (px, py)}`` ground anchors.
+        project: Callable mapping an ``(n, 2)`` pixel array to metric ``(n, 2)``.
+        real_length_m: The vehicle's known real length in metres (> 0).
+        positions: How many frames to sample across the track.
+
+    Returns:
+        ``(factor, reason)`` where ``factor`` is the multiplicative speed
+        correction (``> 1`` boosts a compressed speed) or ``None`` when abstaining;
+        ``reason`` is a short zh-TW explanation for logs / captions.
+    """
+    frames = sorted(set(boxes_by_frame) & set(anchors_by_frame))
+    if len(frames) < SCALE_MIN_SAMPLES + 1 or real_length_m <= 0:
+        return None, "軌跡點不足，無法判定尺度"
+    metric_anchors = {
+        f: tuple(map(float, project(np.array([anchors_by_frame[f]], np.float32))[0]))
+        for f in frames
+    }
+    if positions >= len(frames):
+        picks = frames
+    else:
+        step = (len(frames) - 1) / (positions - 1)
+        picks = sorted({frames[round(i * step)] for i in range(positions)})
+    travel = _metric_travel_dirs(metric_anchors, picks)
+
+    long_scales: list[float] = []
+    lateral = 0
+    for frame in picks:
+        direction = travel[frame]
+        if direction is None:
+            continue
+        (ax, ay), (bx, by) = box_long_axis_endpoints(boxes_by_frame[frame])
+        metric = np.asarray(
+            project(np.array([[ax, ay], [bx, by]], np.float32)), dtype=np.float64
+        )
+        axis = metric[1] - metric[0]
+        axis_len = float(np.hypot(*axis))
+        if axis_len <= 1e-6:
+            continue
+        cos = abs(float(np.dot(axis / axis_len, direction)))
+        if cos >= SCALE_ALIGNED_COS:
+            long_scales.append(axis_len / real_length_m)
+        else:
+            lateral += 1
+
+    if len(long_scales) < SCALE_MIN_SAMPLES:
+        return None, (f"車框長軸為橫向（{lateral} 幀），此視角無法還原縱向速度尺度")
+    arr = np.asarray(long_scales, dtype=np.float64)
+    mean = float(arr.mean())
+    cv = float(arr.std() / mean) if mean > 0 else float("inf")
+    if cv > SCALE_MAX_CV:
+        return None, f"縱向尺度不一致（CV {cv:.2f}），可能為外推壓縮，不套用"
+    scale = float(np.median(arr))
+    factor = min(max(1.0 / scale, SCALE_MIN_FACTOR), SCALE_MAX_FACTOR)
+    return factor, (
+        f"縱向對齊 {len(long_scales)} 幀、尺度 {scale:.2f}×→ 速度 ×{factor:.2f}"
+    )
+
+
+def speed_scale_corrections(
+    csv_path: Path = PROMPT_TRACKS_CSV,
+) -> dict[str, tuple[float, str]]:
+    """Per-vehicle speed multiplier (Path A) for every vehicle with a known length.
+
+    Runs :func:`longitudinal_scale_correction` for each label in
+    ``SCENE.vehicle_length_m``. A vehicle whose view cannot recover the scale
+    (rear/head-on, inconsistent) gets factor ``1.0`` so callers can apply the
+    factor unconditionally.
+
+    Args:
+        csv_path: Tracks CSV with box + anchor columns; defaults to the scene's.
+
+    Returns:
+        ``{label: (factor, reason)}`` (empty when uncalibrated or no known lengths).
+    """
+    lengths = SCENE.vehicle_length_m or {}
+    if not lengths or VIEW_TRANSFORMER is None:
+        return {}
+    boxes = load_boxes(csv_path)
+    anchors = load_anchors(csv_path)
+    if not boxes:
+        return {}
+    out: dict[str, tuple[float, str]] = {}
+    for label, real_length_m in lengths.items():
+        by_frame = boxes.get(label)
+        anchor_track = anchors.get(label)
+        if not by_frame or not anchor_track:
+            continue
+        factor, reason = longitudinal_scale_correction(
+            by_frame, anchor_track, VIEW_TRANSFORMER.transform_points, real_length_m
+        )
+        out[label] = (factor if factor is not None else 1.0, reason)
+    return out
+
+
+def speed_correction_caption(
+    corrections: dict[str, tuple[float, str]] | None = None,
+) -> str:
+    """One-line zh-TW note of which vehicles got a longitudinal speed correction.
+
+    Args:
+        corrections: A :func:`speed_scale_corrections` mapping; recomputed if None.
+
+    Returns:
+        ``"縱向尺度校正:car ×3.10"`` for applied factors, or ``""`` when none
+        applied (so callers can omit it).
+    """
+    corrections = corrections if corrections is not None else speed_scale_corrections()
+    applied = {
+        label: factor for label, (factor, _) in corrections.items() if factor != 1.0
+    }
+    if not applied:
+        return ""
+    body = "、".join(f"{label} ×{factor:.2f}" for label, factor in applied.items())
+    return "縱向尺度校正:" + body
+
+
 def _similarity_transform(source: np.ndarray, target: np.ndarray):
     """Least-squares similarity (rotate + uniform scale + translate) source->target.
 
