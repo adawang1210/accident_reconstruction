@@ -21,6 +21,7 @@
 - [`docs/README.md`](docs/README.md) — 完整使用說明
 - [`docs/PROJECT_SUMMARY.md`](docs/PROJECT_SUMMARY.md) — 專案進度與操作紀錄
 - [`docs/ACCIDENT_2D_RECONSTRUCTION.md`](docs/ACCIDENT_2D_RECONSTRUCTION.md) — 永康場景的技術細節
+- [`docs/3D_RECONSTRUCTION.md`](docs/3D_RECONSTRUCTION.md) — 3D 場景重建（深度 splat 背景 + CAD 路面模型）
 
 ---
 

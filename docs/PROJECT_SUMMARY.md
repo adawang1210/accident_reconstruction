@@ -141,7 +141,12 @@ data/scenes/                          # 各場景資料（非影片工件）
 - **清 mypy 型別債**：目前有 24 個既有 mypy 錯誤（多為 `Optional` 未收斂），mypy hook 已暫設為
     `stages: [manual]` 不擋 CI。清完後把 `stages: [manual]` 拿掉即可恢復強制檢查。
     檢查指令：`pre-commit run --hook-stage manual mypy --all-files`。
-- （研究向）魚眼去畸變、單目 3D 車輛擬合、GPS ground-truth 驗證、3D 場景還原（已擱置）。
+- （研究向）魚眼去畸變、單目 3D 車輛擬合、GPS ground-truth 驗證。
+- **3D 場景重建（已推進，非擱置）**：兩條線都有實作——(A) 深度 splat 背景
+    （`depth_backdrop.py`，已在 master）、(B) 影片自標定 + CAD 路面模型
+    （`self_calibration.py` + `RoadCad.tsx`，在 branch `accident-scene-cad-modeling-5aaa03`，
+    尚未併入 master）。完整說明見 [`3D_RECONSTRUCTION.md`](3D_RECONSTRUCTION.md)。
+    仍開放：把 2D 軌跡對位進 3D 場景（`splat_georef`）。
 
 ---
 
@@ -385,7 +390,7 @@ data/scenes/                          # 各場景資料（非影片工件）
     - `scene_config.py`:新增 `true_vehicle_starts: dict | None`(`{label:(lat,lon)}`,+ to_dict/from_dict)。keelung 填入使用者地圖讀的真實起點:taxi `(25.1340989,121.7474192)`、police_car `(25.1340959,121.7474648)`。
     - `birdseye_manual_annotation.build_alignment`:有 `true_vehicle_starts[label]` 的車改用**兩點相似(撞擊+起點,含 scale)**——撞擊→TRUE_IMPACT、起點→真實起點,scale=真實距離/辨識距離,bearing 由兩點決定(覆蓋道路 bearing);沒設的車維持「只旋轉、貼道路」。transforms 由 2-tuple 改 3-tuple 帶 scale。
     - 結果:計程車路徑 **7.7→19.3 m**(scale≈2.47)、警車 **3.9→8.7 m**(scale≈2.26);KML 計程車從真實起點沿義二路展開。**待使用者把 KML 疊 Google My Maps 驗證**;若仍偏短/偏向,調 `true_vehicle_starts` 兩點即可(起點也決定方向,需沿該車道路精準點)。
-    - 注意:scale 由「撞擊→起點」短段(辨識僅 ~1 m)推得 → 敏感;魚眼壓縮非均勻 → 端點準、中段可能微彎。(C) 深層解(相機標定/單目 3D)仍擱置。
+    - 注意:scale 由「撞擊→起點」短段(辨識僅 ~1 m)推得 → 敏感;魚眼壓縮非均勻 → 端點準、中段可能微彎。(C) 深層解(相機標定)**已做**:影片自標定(消失點+已知車寬)量出路面幾何,取代不可信的 GCP homography——見 [`3D_RECONSTRUCTION.md`](3D_RECONSTRUCTION.md) 的 CAD 線(branch `accident-scene-cad-modeling-5aaa03`)。
 
 ### 錨點 UI 化(step ② 可輸入撞擊點+每車出現點,2026-06-25)
 

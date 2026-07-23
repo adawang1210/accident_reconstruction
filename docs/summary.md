@@ -160,6 +160,25 @@ homography 在校正區外（尤其近地平線）會壓縮遠處距離，使 me
     參數與做法參考車流軌跡資料集（NGSIM）常用設定：window 7、order 2；來源見
     tandfonline `10.1080/23249935.2022.2163207`、GitHub `NGSIM-US-101-trajectory-dataset-smoothing`。
     實測 BMW：抖動 −47%，路徑僅位移 ~2 cm（幾乎不改原始路徑）。
+- **無回歸保護**（per-vehicle）：在地輪廓 anchor 對**寬物體**（汽車）有幫助，但對
+    **窄物體**（機車）的中位 column 會逐幀跳、在斷幀處製造假速度尖峰。若某車套用後
+    的**峰值速度**超過 legacy 的 1.5 倍就整條退回 legacy（`_PEAK_SPEED_TOLERANCE`）。
+    BMW 實測：汽車套用（6→7.9 km/h）、機車退回（避免 54 km/h 假尖峰）。
+- **空缺補值 + 虛線橋接**（`interpolate_straight_gaps`）：SAM2 會在車轉向／模糊時
+    跟丟數十幀，軌跡與影片線因此消失。**只在空缺前後方向一致（<25°，直行）**時線性
+    內插補回；**跨越轉彎的空缺不補**（直線會切西瓜），保留成虛線。上限 `GAP_FILL_MAX_FRAMES`。
+    BMW：直行空缺 41–59／161–179 補上實線（汽車 154→192 點）、轉彎空缺 101–119 留虛線橋接。
+
+## Stage-2 疊加影片（`reconstruction_overlay`，`auto_reconstruct.py`）
+
+Stage-1 的「追蹤疊加影片」（`prompt_tracked`）畫的是**舊的框角 anchor**；Stage-2 另出一支
+**重建疊加影片**：把上面校正＋平滑＋補值後的公制軌跡，經 `ViewTransformer.inverse_transform_points`
+（反單應＋還原鏡頭畸變）**反投影回原影片畫面**，逐幀畫成長軌跡線＋anchor 點——所以影片上的線
+與地圖／CSV 完全一致。工作台「追蹤影片」分頁**優先顯示這支**（`web_app._result_files` 的 `tracked`
+kind，沒有才退回 Stage-1 影片）；`auto_reconstruct.main` 會自動產生。線每幀都畫（持續顯示）、
+跨空缺處畫**虛線**標明未觀測。
+
+> 3D 場景重建（splat 背景 + CAD 路面模型）另見 [`3D_RECONSTRUCTION.md`](3D_RECONSTRUCTION.md)。
 
 ---
 
