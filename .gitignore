@@ -185,3 +185,5 @@ frontend/.env
 frontend/.env.local
 frontend/.env.*.local
 frontend/public/reconstruction.json
+# 真實場景重建結果（含真實事故經緯度），由 `npm run sync:scenes` 從 data/ 產生
+frontend/public/scenes/

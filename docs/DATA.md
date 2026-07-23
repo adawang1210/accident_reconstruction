@@ -42,16 +42,16 @@ GCP 的 `pixel`／`lat`／`lon`。
 
 ### 2.1 `pre_impact_motorcycle` — 台南永康 自強路 × 高速一街二段（機車被汽車撞）
 
-| 項目       | 內容                                                                                      |
-| ---------- | ----------------------------------------------------------------------------------------- |
-| 來源網址   | `https://m.youtube.com/watch?v=x_u9wGClKLQ&source_ve_path=OTY3MTQ&embeds_referring_euri=https%3A%2F%2Fwww.wowtchout.com%2F`                                                                                  |
-| 標記點     | [`scene_records/pre_impact_motorcycle.json`](../scene_records/pre_impact_motorcycle.json) |
-| 下載存成   | `data/videos/pre_impact_motorcycle_source.mp4`                                            |
-| 場景參數   | frames 80–180、fps 25、內建場景（`scene_config.PRE_IMPACT_MOTORCYCLE`）                   |
-| 校正方法   | least-squares（MAGSAC 僅留 5/15 → 改用最小平方），無去畸變                                |
-| GCP 數     | 15                                                                                        |
-| 殘差       | mean **3.20 m** / max **7.08 m**（魚眼廣角，此場景殘差較大）                              |
-| 原點經緯度 | 23.0268866, 120.2496444                                                                   |
+| 項目       | 內容                                                                                                                        |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 來源網址   | `https://m.youtube.com/watch?v=x_u9wGClKLQ&source_ve_path=OTY3MTQ&embeds_referring_euri=https%3A%2F%2Fwww.wowtchout.com%2F` |
+| 標記點     | [`scene_records/pre_impact_motorcycle.json`](../scene_records/pre_impact_motorcycle.json)                                   |
+| 下載存成   | `data/videos/pre_impact_motorcycle_source.mp4`                                                                              |
+| 場景參數   | frames 80–180、fps 25、內建場景（`scene_config.PRE_IMPACT_MOTORCYCLE`）                                                     |
+| 校正方法   | least-squares（MAGSAC 僅留 5/15 → 改用最小平方），無去畸變                                                                  |
+| GCP 數     | 15                                                                                                                          |
+| 殘差       | mean **3.20 m** / max **7.08 m**（魚眼廣角，此場景殘差較大）                                                                |
+| 原點經緯度 | 23.0268866, 120.2496444                                                                                                     |
 
 ### 2.2 `keelung_xinwu_yier` — 基隆 信五路 × 義二路（警車被計程車撞）
 
@@ -81,16 +81,16 @@ GCP 的 `pixel`／`lat`／`lon`。
 
 ### 2.4 `taoyuan_yangmei` — 桃園楊梅 高鐵南路七段（違規左轉）
 
-| 項目       | 內容                                                                              |
-| ---------- | --------------------------------------------------------------------------------- |
-| 來源網址   | `https://m.youtube.com/watch?v=naWS5Jhd6Yk&source_ve_path=OTY3MTQ&embeds_referring_euri=https%3A%2F%2Fwww.wowtchout.com%2F`                                                                          |
-| 標記點     | [`scene_records/taoyuan_yangmei.json`](../scene_records/taoyuan_yangmei.json)     |
-| 下載存成   | `data/videos/【車禍影片】違規左轉的下場（2026.03.01 桃園市楊梅區高鐵南路七段.mp4` |
-| 場景參數   | frames 0–199、fps 25、動態場景（`data/scenes/taoyuan_yangmei/scene.json`）        |
-| 校正方法   | least-squares ＋ 去畸變 k1=-0.25                                                  |
-| GCP 數     | 10                                                                                |
-| 殘差       | mean **0.43 m** / max **0.77 m**（四個場景中最準）                                |
-| 原點經緯度 | 24.9430254, 121.1211700                                                           |
+| 項目       | 內容                                                                                                                        |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 來源網址   | `https://m.youtube.com/watch?v=naWS5Jhd6Yk&source_ve_path=OTY3MTQ&embeds_referring_euri=https%3A%2F%2Fwww.wowtchout.com%2F` |
+| 標記點     | [`scene_records/taoyuan_yangmei.json`](../scene_records/taoyuan_yangmei.json)                                               |
+| 下載存成   | `data/videos/【車禍影片】違規左轉的下場（2026.03.01 桃園市楊梅區高鐵南路七段.mp4`                                           |
+| 場景參數   | frames 0–199、fps 25、動態場景（`data/scenes/taoyuan_yangmei/scene.json`）                                                  |
+| 校正方法   | least-squares ＋ 去畸變 k1=-0.25                                                                                            |
+| GCP 數     | 10                                                                                                                          |
+| 殘差       | mean **0.43 m** / max **0.77 m**（四個場景中最準）                                                                          |
+| 原點經緯度 | 24.9430254, 121.1211700                                                                                                     |
 
 ---
 

@@ -145,6 +145,24 @@ homography 在校正區外（尤其近地平線）會壓縮遠處距離，使 me
 
 ---
 
+## 軌跡 anchor 與平滑化（`ground_footprint.py`）
+
+- **在地輪廓 anchor**（尺度無關）：舊 anchor 是外框底邊中點 `((x1+x2)//2, y2)`，
+    那個像素常不在車上（車尾視角浮在路面、轉彎時橫滑）。改取輪廓自己的**中位
+    column ＋ 該處接地列**（`contour_anchor_px`），anchor 恆貼在車體接地線上。
+    純像素幾何、不假設車輛尺寸，故在尺度不忠實的 BMW homography 上仍有效
+    （影像面 anchor 誤差 20→3 px）。
+- **已知車長矩形擬合**（尺度相依，選用第二層）：只在 homography 尺度忠實
+    （投影輪廓長 ≈ 真實車長的 0.7–1.6 倍）且為箱型四輪車時，再精修到佔地中心。
+- **Savitzky-Golay 平滑**（`savgol_smooth`）：像素量化留下公分級抖動；用**二階局部
+    多項式**（window 7）擬合去抖，同時**保留路徑真實形狀**（真實轉彎、撞擊瞬間的
+    急動），這點勝過會把轉角抹圓的移動平均。在 frame 域擬合以支援丟幀／變動幀率。
+    參數與做法參考車流軌跡資料集（NGSIM）常用設定：window 7、order 2；來源見
+    tandfonline `10.1080/23249935.2022.2163207`、GitHub `NGSIM-US-101-trajectory-dataset-smoothing`。
+    實測 BMW：抖動 −47%，路徑僅位移 ~2 cm（幾乎不改原始路徑）。
+
+---
+
 ## 相關 commit
 
 - `merge_suppression_cuts` / `box_containment`（模式一）
