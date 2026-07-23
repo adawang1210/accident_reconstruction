@@ -13,21 +13,33 @@ glTF 車輛匯入、HDRI/ACES 打光，以及 **Google Photorealistic 3D Tiles**
 ```bash
 cd frontend
 npm install
+npm run sync:scenes    # 從 ../data/ 匯入實際跑過的重建結果（見下）
 npm run dev            # 開 http://localhost:5173
 ```
 
-預設載入內建的合成範例 `public/reconstruction.sample.json`，`npm run dev` 即可看到
-兩台車交叉、撞擊點閃爍。
+## 場景資料（實際跑過的路線）
 
-## 換成真實資料
+`npm run sync:scenes` 掃描 `../data/**/*_reconstruction.json`——也就是後端 pipeline
+每次跑完的產物——複製到 `public/scenes/`，並寫出 `public/scenes/index.json` 清單。
+前端開場即載入清單，HUD 左上角可切換場景，也可用網址指定：
 
-`reconstruction.json` 由後端每次 pipeline 跑完產生。三種接法：
+```
+http://localhost:5173/?scene=keelung_xinwu_yier
+```
 
-1. **靜態檔**：把某場景的 `<scene>_reconstruction.json` 複製到
-    `public/reconstruction.json`，並設定
-    `VITE_RECONSTRUCTION_URL=/reconstruction.json`（`.env` 或啟動時帶入）。
-    （`public/reconstruction.json` 已在 `.gitignore`，避免誤提交真實事故 GPS。）
-2. **後端 API**：啟動 FastAPI 工作台後，設定
+清單依 `gcp_ground_span_m` 由大到小排序，所以**預設開在校正範圍最大、車速最可信的
+場景**。`data/` 只在主 repo（gitignored），所以這個指令要在主 repo 目錄跑。
+
+> `public/scenes/` 同樣在 `.gitignore`，避免誤提交真實事故 GPS；重新 clone 後跑一次
+> `npm run sync:scenes` 即可。
+
+### 指定單一來源（略過清單）
+
+設定 `VITE_RECONSTRUCTION_URL` 就會固定載入該來源、隱藏場景選單：
+
+1. **靜態檔**：複製到 `public/reconstruction.json`，設
+    `VITE_RECONSTRUCTION_URL=/reconstruction.json`。
+2. **後端 API**：啟動 FastAPI 工作台後，設
     `VITE_RECONSTRUCTION_URL="/api/reconstruction?video=<檔名>"`。
     `vite.config.ts` 的 dev proxy 會把 `/api` 轉到 `http://127.0.0.1:8000`。
 3. 其他來源：任意設定 `VITE_RECONSTRUCTION_URL` 指向回傳該 JSON 的網址。

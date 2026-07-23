@@ -1,23 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ElementRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, ContactShadows, Environment } from "@react-three/drei";
+import { OrbitControls, ContactShadows } from "@react-three/drei";
 import * as THREE from "three";
-import type { Reconstruction } from "../types";
+import type { Reconstruction, RoadPoint } from "../types";
 import { usePlayback } from "../playback/store";
 import { Ground } from "./Ground";
 import { Roads } from "./Roads";
 import { Vehicle } from "./Vehicle";
+import { TrackPath } from "./TrackPath";
 import { ImpactMarker } from "./ImpactMarker";
 import { GoogleTiles, GOOGLE_TILES_KEY } from "./GoogleTiles";
 import { CityBlocks } from "./CityBlocks";
-import { SchematicStreets } from "./SchematicStreets";
+import { OsmStreets } from "./OsmStreets";
+import { SchematicStreets, SchematicGround } from "./SchematicStreets";
 import { SplatScene, HAS_SPLAT } from "./SplatScene";
+import { SafeEnvironment } from "./SafeEnvironment";
+import { computeBounds, framingFor } from "./bounds";
+import { useOsm } from "./osm";
 
 // Which basemap to render under the reconstruction. "schematic" (default) =
-// clean OSM extruded buildings (sharp, free-orbit). "tiles" = Google photoreal
-// 3D Tiles. A real Gaussian splat (VITE_SPLAT_URL) overrides both. Set via
-// VITE_BASEMAP.
+// clean OSM extruded buildings + real OSM streets (sharp, free-orbit).
+// "tiles" = Google photoreal 3D Tiles. A real Gaussian splat (VITE_SPLAT_URL)
+// overrides both. Set via VITE_BASEMAP.
 export const BASEMAP =
   (import.meta.env.VITE_BASEMAP as string | undefined) ?? "schematic";
 
@@ -31,24 +36,37 @@ function PlaybackDriver() {
 // Duration of the opening fly-down (top-down over the action -> ground level).
 const INTRO_SECONDS = 3.5;
 
-// Centre the camera target on the action (mean of all road/track points).
-function useSceneCenter(data: Reconstruction): [number, number, number] {
-  return useMemo(() => {
-    const xs: number[] = [];
-    const zs: number[] = [];
-    for (const v of Object.values(data.vehicles))
-      for (const s of v.track) {
-        xs.push(s.x_m);
-        zs.push(-s.z_m);
-      }
-    if (xs.length === 0) return [0, 0, 0];
-    const mean = (a: number[]) => a.reduce((p, c) => p + c, 0) / a.length;
-    return [mean(xs), 0, mean(zs)];
-  }, [data]);
+/** OSM basemap layers, split out so the fetch hook can run unconditionally. */
+function SchematicBasemap({
+  lat,
+  lon,
+  radius,
+  roads,
+}: {
+  lat: number;
+  lon: number;
+  radius: number;
+  roads: Record<string, RoadPoint[]>;
+}) {
+  const { data, settled } = useOsm(lat, lon, radius);
+  const highways = data?.highways ?? [];
+  // Only fall back to the pipeline's own centrelines once OSM has definitively
+  // come back without streets -- otherwise both layers would flash on load.
+  const useFallbackStreets = settled && highways.length === 0;
+
+  return (
+    <>
+      {data && <CityBlocks ways={data.buildings} lat={lat} lon={lon} />}
+      {highways.length > 0 && <OsmStreets ways={highways} lat={lat} lon={lon} />}
+      {useFallbackStreets && <SchematicStreets roads={roads} />}
+    </>
+  );
 }
 
 export function Scene({ data }: { data: Reconstruction }) {
-  const center = useSceneCenter(data);
+  const bounds = useMemo(() => computeBounds(data), [data]);
+  const framing = useMemo(() => framingFor(bounds.radius), [bounds.radius]);
+  const center = bounds.center;
   const impactTime =
     data.impact?.frame != null ? data.impact.frame / data.fps : null;
 
@@ -84,10 +102,19 @@ export function Scene({ data }: { data: Reconstruction }) {
   const SPLAT_TARGET: [number, number, number] = [0, 2, -20];
   const SPLAT_EYE: [number, number, number] = [0, 6, 16];
 
+  // Replay the intro whenever the scene changes, so switching scenes reframes
+  // on the new action instead of leaving the camera over the old one.
+  useEffect(() => {
+    introElapsed.current = 0;
+    introDone.current = false;
+  }, [data]);
+
   // Opening move: a high near-top-down look at the action easing down into a
   // low cinematic shot. Both ends keep the cars in frame, so the scene is never
-  // staring into empty space while tiles stream (or fail to). Skipped for a
-  // splat backdrop, which gets a fixed frontal camera facing the point cloud.
+  // staring into empty space while tiles stream (or fail to). Every distance
+  // comes from the scene's own size (bounds.ts) -- the old fixed 150 m start
+  // height framed the 60 m synthetic sample and left the real 5-30 m scenes as
+  // a speck. Skipped for a splat backdrop, which gets a fixed frontal camera.
   useFrame((_, dt) => {
     if (introDone.current) return;
     const controls = controlsRef.current;
@@ -116,7 +143,12 @@ export function Scene({ data }: { data: Reconstruction }) {
     const gy = groundY; // follow the street height as the snap refines it
     // start high top-down (shows the layout) -> ease into a three-quarter
     // overview framed tight on the accident scene + immediate buildings.
-    camera.position.set(cx + 12 * t, gy + 150 - 95 * t, cz + 22 * t);
+    const { introStartY, introEndY, introOffset } = framing;
+    camera.position.set(
+      cx + introOffset * 0.55 * t,
+      gy + introStartY - (introStartY - introEndY) * t,
+      cz + introOffset * t,
+    );
     camera.lookAt(cx, gy, cz);
     camera.updateProjectionMatrix();
     appliedGroundY.current = gy;
@@ -164,7 +196,9 @@ export function Scene({ data }: { data: Reconstruction }) {
       <color attach="background" args={[useSchematic ? "#e9edf3" : "#10131a"]} />
       {/* Fade the basemap into the background so the (intentionally limited)
           range has a soft edge instead of a hard clip at the far plane. A real
-          splat carries its own depth, so it is left un-fogged. */}
+          splat carries its own depth, so it is left un-fogged. Tiles stream
+          city-wide context, so they get a much longer range than the
+          scene-sized schematic basemap. */}
       {!useSplat && (
         <fog
           attach="fog"
@@ -172,37 +206,52 @@ export function Scene({ data }: { data: Reconstruction }) {
             useTiles
               ? ["#10131a", 600, 1600]
               : useSchematic
-                ? ["#e9edf3", 150, 360]
-                : ["#15171c", 120, 320]
+                ? ["#e9edf3", framing.fogNear, framing.fogFar]
+                : ["#15171c", framing.fogNear, framing.fogFar]
           }
         />
       )}
 
       {useSplat && <SplatScene />}
 
-      {/* HDRI image-based lighting for realistic car paint/reflections. */}
-      <Environment preset="city" />
+      {/* HDRI image-based lighting for realistic car paint/reflections, with a
+          plain-light fallback if the HDRI CDN can't be reached. */}
+      <SafeEnvironment />
 
       <hemisphereLight args={["#cdd6ff", "#2a2118", 0.6]} />
       <ambientLight intensity={0.25} />
+      {/* Sun + shadow frustum both sized and centred on the action. The frustum
+          used to be a fixed 80 m box at the world origin, so a scene offset
+          from the origin had its shadows clipped away. */}
       <directionalLight
-        position={[40, 70, 20]}
+        position={[
+          center[0] + bounds.radius,
+          bounds.radius * 3.5,
+          center[2] + bounds.radius * 0.6,
+        ]}
         intensity={2.2}
         castShadow
         shadow-mapSize={[2048, 2048]}
-        shadow-camera-left={-80}
-        shadow-camera-right={80}
-        shadow-camera-top={80}
-        shadow-camera-bottom={-80}
+        shadow-camera-left={-bounds.radius * 3}
+        shadow-camera-right={bounds.radius * 3}
+        shadow-camera-top={bounds.radius * 3}
+        shadow-camera-bottom={-bounds.radius * 3}
         shadow-bias={-0.0002}
       />
 
       <PlaybackDriver />
 
       {useSchematic && data.origin_latlon && (
-        <CityBlocks lat={data.origin_latlon[0]} lon={data.origin_latlon[1]} />
+        <>
+          <SchematicGround size={framing.groundSize} />
+          <SchematicBasemap
+            lat={data.origin_latlon[0]}
+            lon={data.origin_latlon[1]}
+            radius={framing.osmRadius}
+            roads={data.roads}
+          />
+        </>
       )}
-      {useSchematic && <SchematicStreets roads={data.roads} />}
 
       {useTiles && !tilesFailed && data.origin_latlon && (
         <GoogleTiles
@@ -223,14 +272,17 @@ export function Scene({ data }: { data: Reconstruction }) {
         {!useSchematic && !useSplat && !tilesReady && <Ground />}
         {!useSchematic && <Roads roads={data.roads} />}
         {Object.entries(data.vehicles).map(([id, v]) => (
-          <Vehicle key={id} data={v} />
+          <TrackPath key={`path-${id}`} data={v} />
+        ))}
+        {Object.entries(data.vehicles).map(([id, v]) => (
+          <Vehicle key={id} id={id} data={v} />
         ))}
         {data.impact && (
           <ImpactMarker impact={data.impact} impactTime={impactTime} />
         )}
         <ContactShadows
           position={[center[0], 0.02, center[2]]}
-          scale={120}
+          scale={framing.shadowScale}
           resolution={1024}
           blur={2.2}
           opacity={0.5}
@@ -242,8 +294,8 @@ export function Scene({ data }: { data: Reconstruction }) {
         ref={controlsRef}
         target={target}
         maxPolarAngle={Math.PI / 2.05}
-        minDistance={8}
-        maxDistance={260}
+        minDistance={framing.minDistance}
+        maxDistance={framing.maxDistance}
         makeDefault
       />
     </>

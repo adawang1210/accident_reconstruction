@@ -45,6 +45,29 @@ body,
   color: #ffcf6b;
 }
 
+.hud .dim {
+  color: #98a1b0;
+}
+
+/* The HUD is pointer-events: none so it never blocks orbiting; the scene picker
+   is the one interactive control in it, so opt it back in. */
+.hud .scene-pick {
+  pointer-events: auto;
+  display: block;
+}
+
+.hud .scene-pick select {
+  max-width: 230px;
+  margin-top: 2px;
+  padding: 3px 6px;
+  background: rgba(12, 14, 18, 0.9);
+  color: #e8ecf3;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 5px;
+  font: inherit;
+  cursor: pointer;
+}
+
 .timeline {
   position: absolute;
   left: 50%;
