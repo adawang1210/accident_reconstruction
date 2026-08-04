@@ -12,11 +12,16 @@
 
 ```
 影片 → ① 場景設定 → ② GCP 校正（像素↔經緯度單應矩陣）
-      → ③ 框選車輛 → ④ SAM2 追蹤 → ⑤ 投影 + 撞擊偵測 + 道路對齊
+      → ③ 框選車輛 → ④ SAM2 追蹤 → ⑤ 投影 + 撞擊偵測 + 軌跡精修 + 道路對齊
       → ⑥ 輸出 KML / CSV / 地圖圖片
 ```
 
-速度與位置以這條 2D homography 管線為準；其餘（軌跡精修、3D 場景、前端）都是圍繞它的呈現。
+其中步驟 ⑤ 的軌跡精修本身是一條子管線，順序為
+**在地輪廓 anchor → 峰值速度守門 → Kalman-RTS 平滑 → 空缺補值 → 再平滑**；
+平滑是**無條件**執行的最後一段，不隨 anchor 修正成功與否而被跳過
+（見 [`docs/TRAJECTORY_SMOOTHING.md`](docs/TRAJECTORY_SMOOTHING.md)）。
+
+速度與位置以這條 2D homography 管線為準；其餘（3D 場景、前端）都是圍繞它的呈現。
 
 ---
 
@@ -24,15 +29,15 @@
 
 本 repo 是「一條 2D 管線 + 圍繞它的呈現層」。各部分與其詳細文件：
 
-| 部分 | 做什麼 | 程式 | 詳細文件 |
-|---|---|---|---|
-| **2D 重建管線** | 影片 → 追蹤 → 投影 → 撞擊/對齊 → KML/CSV/圖 | `accident_reconstruction/` | [`docs/README.md`](docs/README.md)、[`ACCIDENT_2D_RECONSTRUCTION.md`](docs/ACCIDENT_2D_RECONSTRUCTION.md) |
-| **Web 工作台** | 五步驟 UI 收整條管線，磁碟讀結果 | `web_app.py` | [`docs/README.md`](docs/README.md) §工作台 |
-| **軌跡精修** | 在地輪廓 anchor、Kalman-RTS 平滑、空缺補值、Stage-2 疊加影片 | `ground_footprint.py`、`trajectory_smoothing.py`、`auto_reconstruct.py` | [`docs/summary.md`](docs/summary.md)、[`TRAJECTORY_SMOOTHING.md`](docs/TRAJECTORY_SMOOTHING.md) |
-| **車速校正**（Path A） | 方向感知的縱向尺度校正（後視誠實棄權） | `auto_reconstruct.py` | [`docs/summary.md`](docs/summary.md) §車速 |
-| **3D 場景重建** | 深度 splat 背景 + CAD 路面模型 | `depth_backdrop.py`、`self_calibration.py`※ | [`docs/3D_RECONSTRUCTION.md`](docs/3D_RECONSTRUCTION.md) |
-| **前端 3D 檢視器** | Three.js/R3F 回放軌跡＋底圖（OSM/Google tiles/splat） | `frontend/` | [`frontend/README.md`](frontend/README.md)、[`SPLAT_NOTES.md`](frontend/SPLAT_NOTES.md) |
-| **資料交換格式** | `reconstruction.json` schema（給前端） | — | [`docs/frontend_api.md`](docs/frontend_api.md) |
+| 部分                   | 做什麼                                                                             | 程式                                                                    | 詳細文件                                                                                                  |
+| ---------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **2D 重建管線**        | 影片 → 追蹤 → 投影 → 撞擊/對齊 → KML/CSV/圖                                        | `accident_reconstruction/`                                              | [`docs/README.md`](docs/README.md)、[`ACCIDENT_2D_RECONSTRUCTION.md`](docs/ACCIDENT_2D_RECONSTRUCTION.md) |
+| **Web 工作台**         | 五步驟 UI 收整條管線，磁碟讀結果                                                   | `web_app.py`                                                            | [`docs/README.md`](docs/README.md) §工作台                                                                |
+| **軌跡精修**           | 在地輪廓 anchor → 峰值守門 → Kalman-RTS 平滑 → 空缺補值 → 再平滑、Stage-2 疊加影片 | `ground_footprint.py`、`trajectory_smoothing.py`、`auto_reconstruct.py` | [`docs/summary.md`](docs/summary.md)、[`TRAJECTORY_SMOOTHING.md`](docs/TRAJECTORY_SMOOTHING.md)           |
+| **車速校正**（Path A） | 方向感知的縱向尺度校正（後視誠實棄權）                                             | `auto_reconstruct.py`                                                   | [`docs/summary.md`](docs/summary.md) §車速                                                                |
+| **3D 場景重建**        | 深度 splat 背景 + CAD 路面模型                                                     | `depth_backdrop.py`、`self_calibration.py`※                             | [`docs/3D_RECONSTRUCTION.md`](docs/3D_RECONSTRUCTION.md)                                                  |
+| **前端 3D 檢視器**     | Three.js/R3F 回放軌跡＋底圖（OSM/Google tiles/splat）                              | `frontend/`                                                             | [`frontend/README.md`](frontend/README.md)、[`SPLAT_NOTES.md`](frontend/SPLAT_NOTES.md)                   |
+| **資料交換格式**       | `reconstruction.json` schema（給前端）                                             | —                                                                       | [`docs/frontend_api.md`](docs/frontend_api.md)                                                            |
 
 ※ CAD 線在未併入的 branch `accident-scene-cad-modeling-5aaa03` 上，見 3D 文件。
 
@@ -45,35 +50,60 @@
 
 ## 實際成果
 
-四個場景的重建輸出如下。圖為**抽象軌跡圖（不含任何事故畫面）**：彩色線為各車的辨識軌跡、
-🔴 為撞擊點，標註含速度與經緯度。每幀經緯度／速度另有 CSV、軌跡另有可疊 Google My Maps 的
-KML（皆在 `data/`，不入庫）。各場景的來源、校正方法與殘差見 [`docs/DATA.md`](docs/DATA.md)。
+六個場景的重建輸出如下。圖為**抽象軌跡圖（不含任何事故畫面）**：彩色線為各車的辨識軌跡、
+⊕ 為撞擊點，圖頂標註該場景的**速度可靠度**（GCP 涵蓋範圍、軌跡落在校正區的比例）。
+每幀經緯度／速度另有 CSV、軌跡另有可疊 Google My Maps 的 KML（皆在 `data/`，不入庫）。
+前四個場景的來源、校正方法與殘差見 [`docs/DATA.md`](docs/DATA.md)。
 
 > 來源為公開 YouTube 車禍影片，**僅列連結、影片不入庫**（檔大且有版權）。
+
+**殘差看的是校正準度，不是速度準度。** 速度＝homography 量得的距離／時間，只有在 GCP
+真實涵蓋整段行車路線時才可靠；GCP 擠在小範圍時殘差會很漂亮，車速卻被嚴重低估
+（下表因此並列 GCP 涵蓋範圍，詳見 [`docs/summary.md`](docs/summary.md)）。
 
 <table>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/assets/result_keelung_recognized.png" alt="基隆 辨識軌跡" /><br/>
-      <b>基隆 信五路 × 義二路</b>（警車 × 計程車）· 辨識軌跡＋比例尺<br/>
-      殘差 mean <b>0.69 m</b> · <a href="https://m.youtube.com/watch?v=REwQUfTaDMc&ra=m">來源影片</a>
+      <b>基隆 信五路 × 義二路</b>（警車 × 計程車）<br/>
+      殘差 mean <b>0.69 m</b> / max 1.96 m · GCP 涵蓋 ~23 m（8 點）<br/>
+      <a href="https://m.youtube.com/watch?v=REwQUfTaDMc&ra=m">來源影片</a>
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/result_yilan_recognized.png" alt="宜蘭五結 辨識軌跡" /><br/>
-      <b>宜蘭五結 無號誌路口</b>（小貨車 × 機車 × 行人）· 辨識軌跡＋比例尺<br/>
-      殘差 mean <b>0.69 m</b> · <a href="https://m.youtube.com/watch?v=7xQGDASAMEg">來源影片</a>
+      <b>宜蘭五結 無號誌路口</b>（小貨車 × 機車 × 行人）<br/>
+      殘差 mean <b>0.69 m</b> / max 1.76 m · GCP 涵蓋 ~31 m（8 點）<br/>
+      <a href="https://m.youtube.com/watch?v=7xQGDASAMEg">來源影片</a>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/assets/result_taoyuan_recognized.png" alt="桃園楊梅 辨識軌跡" /><br/>
-      <b>桃園楊梅 高鐵南路七段</b>（違規左轉）· 辨識軌跡＋比例尺<br/>
-      殘差 mean <b>0.43 m</b>（最準）· <a href="https://m.youtube.com/watch?v=naWS5Jhd6Yk">來源影片</a>
+      <b>桃園楊梅 高鐵南路七段</b>（違規左轉）<br/>
+      殘差 mean <b>0.43 m</b> / max 0.77 m · GCP 涵蓋 ~16 m（10 點，範圍偏小）<br/>
+      <a href="https://m.youtube.com/watch?v=naWS5Jhd6Yk">來源影片</a>
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/result_pre_impact_recognized.png" alt="台南永康 辨識軌跡" /><br/>
-      <b>台南永康 自強路 × 高速一街二段</b>（汽車 × 機車）· 辨識軌跡＋比例尺<br/>
-      殘差 mean <b>3.20 m</b>（魚眼廣角）· <a href="https://m.youtube.com/watch?v=x_u9wGClKLQ">來源影片</a>
+      <b>台南永康 自強路 × 高速一街二段</b>（汽車 × 機車）<br/>
+      殘差 mean <b>2.98 m</b> / max 6.63 m（魚眼廣角，殘差最大）· GCP 涵蓋 ~29 m（15 點）<br/>
+      <a href="https://m.youtube.com/watch?v=x_u9wGClKLQ">來源影片</a>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/result_yilan_kindergarten_recognized.png" alt="宜蘭市 娃娃車 辨識軌跡" /><br/>
+      <b>宜蘭市 娃娃車 × 自小客車</b><br/>
+      殘差 mean <b>0.95 m</b> / max 2.22 m · GCP 涵蓋 <b>~66 m</b>（13 點，涵蓋最廣，
+      MAGSAC++ 12/13 內點＋去畸變 k1=-0.15）<br/>
+      <a href="https://youtu.be/vWBe0TbZFNQ">來源影片</a>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/result_bmw_recognized.png" alt="BMW 神之鬼切 辨識軌跡" /><br/>
+      <b>臺北市大安區 基隆路四段</b>（BMW「神之鬼切」，汽車 × 機車）<br/>
+      殘差 mean <b>0.33 m</b> / max 0.67 m · GCP 涵蓋 <b>僅 ~20 m</b>（15 點）——
+      殘差最小但涵蓋最窄，<b>車速應偏低估</b>，此場景以軌跡形狀為主要參考<br/>
+      本場景另有 3D 重建，見 <a href="docs/3D_RECONSTRUCTION.md">docs/3D_RECONSTRUCTION.md</a>
     </td>
   </tr>
 </table>
@@ -141,8 +171,9 @@ uv run pre-commit install
 ```
 accident_reconstruction/   可 import 的核心 pipeline 套件（2D 重建 + 軌跡精修 + 3D splat 背景）
   ├ prompt_track_accident.py   Stage 1：SAM2 追蹤 → anchors + 接地輪廓
-  ├ auto_reconstruct.py        Stage 2：投影 + 撞擊 + 軌跡精修 + 疊加影片
-  ├ ground_footprint.py        在地 anchor / 平滑 / 空缺補值
+  ├ auto_reconstruct.py        Stage 2：投影 + 撞擊 + 軌跡精修編排 + 疊加影片
+  ├ ground_footprint.py        在地輪廓 anchor / 空缺補值
+  ├ trajectory_smoothing.py    等加速 Kalman + RTS 平滑、jerk 驗收指標
   ├ depth_backdrop.py          3D 深度 splat 背景（線 A）
   └ web_app.py                 Web 工作台（FastAPI）
 frontend/                  Three.js/R3F 3D 檢視器（回放軌跡；SPLAT_NOTES.md / SCENE_NOTES.md）
