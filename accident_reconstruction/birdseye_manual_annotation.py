@@ -4,7 +4,6 @@ import math
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from xml.sax.saxutils import escape
 
 import cv2
 import numpy as np
@@ -19,6 +18,12 @@ from accident_reconstruction.calibrate_homography import (
     USING_GPS_CALIBRATION,
     latlon_to_local_meters,
     metric_to_latlon,
+)
+from accident_reconstruction.kml_export import (
+    linestring_placemark,
+    point_placemark,
+    rgb_to_kml_color,
+    write_kml_document,
 )
 from accident_reconstruction.manual_pre_impact_motorcycle_annotation import (
     BIRDSEYE_PX_PER_M,
@@ -536,32 +541,6 @@ def write_birdseye_split_video() -> None:
     writer.release()
 
 
-def _kml_linestring(
-    name: str, color_abgr: str, coords: list[tuple[float, float]]
-) -> str:
-    """Build a KML Placemark LineString from lat/lon coordinates.
-
-    Args:
-        name: Placemark name.
-        color_abgr: KML colour as ``aabbggrr`` hex.
-        coords: ``(lat, lon)`` vertices in order.
-
-    Returns:
-        The Placemark XML string (empty when fewer than two points).
-    """
-    if len(coords) < 2:
-        return ""
-    points = " ".join(f"{lon:.7f},{lat:.7f},0" for lat, lon in coords)
-    # ``name`` comes from user-entered vehicle labels; escape so ``&``/``<`` in a
-    # name (e.g. "A&B car") cannot produce malformed KML that fails to import.
-    return (
-        f"  <Placemark><name>{escape(name)}</name>"
-        f"<Style><LineStyle><color>{color_abgr}</color><width>4</width></LineStyle></Style>"
-        f"<LineString><tessellate>1</tessellate>"
-        f"<coordinates>{points}</coordinates></LineString></Placemark>\n"
-    )
-
-
 def _travel_bearing(points_m: list[np.ndarray]) -> float:
     """Principal travel direction (radians) of a metric path, start->end oriented.
 
@@ -696,40 +675,30 @@ def write_kml(data=None, kml_path: Path = BIRDSEYE_KML_PATH) -> None:
     _, metric, impact_frame = data if data is not None else collect_vehicle_motion()
     aligned = _aligned_latlon(metric, impact_frame)
 
-    placemarks = ""
+    placemarks = []
     for label, display in VEHICLE_DISPLAY.items():
         if label not in aligned:
             continue
-        r, g, b = display["rgb"]
-        color = f"ff{b:02x}{g:02x}{r:02x}"  # KML aabbggrr
         road = ROAD_NAMES.get(label, label)
         coords = [
             aligned[label][f] for f in sorted(aligned[label]) if aligned[label][f]
         ]
-        placemarks += _kml_linestring(f"{display['name']} ({road})", color, coords)
+        placemarks.append(
+            linestring_placemark(
+                f"{display['name']} ({road})", rgb_to_kml_color(display["rgb"]), coords
+            )
+        )
 
     # Every vehicle's impact-frame position maps to the true impact, so the marker
     # is the true impact point itself.
     if _impact_point(metric, impact_frame) is not None:
-        clat, clon = TRUE_IMPACT_LATLON
-        placemarks += (
-            f"  <Placemark><name>撞擊點</name>"
-            f"<Point><coordinates>{clon:.7f},{clat:.7f},0</coordinates>"
-            f"</Point></Placemark>\n"
-        )
+        placemarks.append(point_placemark("撞擊點", TRUE_IMPACT_LATLON))
 
     title = " / ".join(
         f"{d['name']} {ROAD_NAMES.get(label, label)}"
         for label, d in VEHICLE_DISPLAY.items()
     )
-    kml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n'
-        f"  <name>車禍 2D 路線 ({title})</name>\n"
-        f"{placemarks}</Document>\n</kml>\n"
-    )
-    kml_path.parent.mkdir(parents=True, exist_ok=True)
-    kml_path.write_text(kml, encoding="utf-8")
+    write_kml_document(kml_path, f"車禍 2D 路線 ({title})", placemarks)
 
 
 def _aligned_latlon(

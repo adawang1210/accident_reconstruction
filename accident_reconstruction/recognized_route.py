@@ -52,7 +52,6 @@ from accident_reconstruction.birdseye_manual_annotation import (
     USING_GPS_CALIBRATION,
     VEHICLE_DISPLAY,
     MapProjection,
-    _kml_linestring,
     _label,
     aligned_motion,
     route_csv_row,
@@ -61,6 +60,12 @@ from accident_reconstruction.calibrate_homography import (
     METERS_PER_DEG_LAT,
     latlon_to_local_meters,
     metric_to_latlon,
+)
+from accident_reconstruction.kml_export import (
+    linestring_placemark,
+    point_placemark,
+    rgb_to_kml_color,
+    write_kml_document,
 )
 from accident_reconstruction.scene_config import SCENE
 from accident_reconstruction.time_axis import frame_seconds, load_frame_times
@@ -484,34 +489,24 @@ def write_recognized_kml(kml_path: Path | None = None) -> Path | None:
         return None
     kml_path = kml_path or SCENE.out_kml.with_name(f"{SCENE.name}_route_recognized.kml")
     paths = recognized_latlon()
-    placemarks = ""
+    placemarks = []
     for index, label in enumerate(sorted(paths)):
         display = _display_for(label, index)
         track = paths.get(label)
         if not track:
             continue
-        r, g, b = display["rgb"]
-        color = f"ff{b:02x}{g:02x}{r:02x}"  # KML aabbggrr
         road = ROAD_NAMES.get(label, label)
         coords = [track[f] for f in sorted(track)]
-        placemarks += _kml_linestring(
-            f"{display['name']} ({road}) 辨識軌跡", color, coords
+        placemarks.append(
+            linestring_placemark(
+                f"{display['name']} ({road}) 辨識軌跡",
+                rgb_to_kml_color(display["rgb"]),
+                coords,
+            )
         )
     if TRUE_IMPACT_LATLON is not None:  # only when an impact point has been set
-        clat, clon = TRUE_IMPACT_LATLON
-        placemarks += (
-            f"  <Placemark><name>撞擊點(地圖判讀)</name>"
-            f"<Point><coordinates>{clon:.7f},{clat:.7f},0</coordinates></Point></Placemark>\n"
-        )
-    kml = (
-        '<?xml version="1.0" encoding="UTF-8"?>\n'
-        '<kml xmlns="http://www.opengis.net/kml/2.2">\n<Document>\n'
-        "  <name>模型辨識軌跡(原始投影,未貼路)</name>\n"
-        f"{placemarks}</Document>\n</kml>\n"
-    )
-    kml_path.parent.mkdir(parents=True, exist_ok=True)
-    kml_path.write_text(kml, encoding="utf-8")
-    return kml_path
+        placemarks.append(point_placemark("撞擊點(地圖判讀)", TRUE_IMPACT_LATLON))
+    return write_kml_document(kml_path, "模型辨識軌跡(原始投影,未貼路)", placemarks)
 
 
 def write_recognized_csv(csv_path: Path | None = None) -> Path | None:
