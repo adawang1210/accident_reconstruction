@@ -22,9 +22,44 @@ from __future__ import annotations
 import numpy as np
 from numpy.typing import NDArray
 
-# Anchor measurement noise, in metres. The on-contour anchor is pixel-quantised;
-# projected to the ground plane that is a few centimetres. Larger -> smoother.
+# Fallback anchor measurement noise, in metres, used only when a track is too
+# short to estimate from. The on-contour anchor is pixel-quantised; projected to
+# the ground plane that is a few centimetres.
+#
+# This is NOT a safe default for every track, which is why
+# :func:`estimate_measurement_std` now supplies it per track. It was tuned on the
+# contour-refined BMW anchor; a RAW homography anchor -- what a scene with no
+# contour sidecar carries, or a vehicle whose peak-speed guard reverted to legacy
+# -- is an order of magnitude noisier. Declaring 8 cm on such a track puts nearly
+# every real sample outside the innovation gate, so the filter ran predict-only
+# and the constant-acceleration model extrapolated freely: 7 of 13 recorded
+# vehicle tracks walked off their true path, 宜蘭五結's car reversing direction
+# and running 57 m the wrong way. Crucially the output stayed SMOOTH throughout
+# (mean |jerk| ~4), so the jerk metrics reported it as a success.
 DEFAULT_MEAS_STD_M = 0.08
+
+# Numerical floor for the estimated noise. A zero estimate makes the measurement
+# variance vanish, the Kalman gain saturate and the innovation gate divide by ~0.
+MIN_MEAS_STD_M = 0.01
+
+# How far the TYPICAL (median) smoothed sample may sit from its measurement
+# before the whole track is rejected as diverged. Scaled by the track's own noise
+# (a raw anchor is legitimately pulled further than a contour-refined one), with
+# a floor so a very clean track still gets room to smooth. Both are deliberately
+# loose: this is a net for a filter that has left the scene, not a cap on
+# smoothing strength.
+DIVERGENCE_TOLERANCE_M = 2.0
+DIVERGENCE_TOLERANCE_SIGMA = 6.0
+# ...and never more than this share of the track's own path length, which is what
+# catches a short track whose noise rivals its entire motion.
+DIVERGENCE_TOLERANCE_EXTENT = 0.5
+
+# Quantile of |second difference| used to estimate a track's noise, and the
+# standard-normal quantile that rescales it (Phi^-1((1+q)/2) for q = 0.9). High
+# enough to see a track's noisy stretch rather than only its clean majority,
+# low enough that a handful of tracking spikes do not set the level.
+_NOISE_QUANTILE = 0.9
+_NOISE_QUANTILE_Z = 1.6449
 
 # Process noise as a jerk "std" (m/s^3-ish); it scales the CA process covariance.
 # Smaller -> the model trusts its constant-acceleration prior more -> smoother but
@@ -53,6 +88,65 @@ def _dt_seconds(
     dt = np.diff(t)
     dt[dt <= 0] = 1.0 / max(fps, 1e-6)  # guard against zero/negative steps
     return dt
+
+
+def estimate_measurement_std(positions: NDArray[np.float64]) -> float:
+    """Estimate a track's per-sample measurement noise, in metres.
+
+    Reads the noise off the track's own high-frequency content, so a raw
+    homography anchor and a contour-refined one each get the ``meas_std`` they
+    actually deserve instead of one constant tuned on a single clip.
+
+    Uses the SECOND difference. At video frame rates the signal contributes
+    almost nothing to it -- a 20 m-radius turn taken in 3 s implies 5.5 m/s^2,
+    which over a 1/30 s step is 6 mm, far under any real anchor noise -- whereas
+    white measurement noise of std sigma gives second differences of variance
+    6*sigma^2.
+
+    Takes a HIGH QUANTILE of the absolute second difference, not the median.
+    Ground-plane noise is not uniform along a track: a vehicle far from the
+    camera has its pixel anchor projected through a much worse-conditioned part
+    of the homography, so one clip can carry centimetre noise near the camera and
+    decimetre noise at the far end. A median-based estimate describes the clean
+    majority and under-states the rest, which is the half of the failure the
+    fixed 0.08 m constant produced -- on three recorded tracks it still left 83-91%
+    of samples outside the gate. Erring high merely over-smooths a little;
+    erring low lets the filter leave the data entirely.
+
+    Args:
+        positions: ``(n, 2)`` positions of one track.
+
+    Returns:
+        The estimated noise std in metres, at least :data:`MIN_MEAS_STD_M`;
+        :data:`DEFAULT_MEAS_STD_M` when the track is too short (< 4 samples).
+
+    Examples:
+        ```python
+        rng = np.random.default_rng(0)
+        clean = np.column_stack([np.linspace(0, 30, 200), np.zeros(200)])
+        round(estimate_measurement_std(clean + rng.normal(0, 0.5, clean.shape)), 1)
+        # 0.5
+        ```
+    """
+    positions = np.asarray(positions, dtype=np.float64)
+    if len(positions) < 4:
+        return DEFAULT_MEAS_STD_M
+    second = np.diff(positions, n=2, axis=0)
+    # |second difference| is half-normal, so its q-quantile is sqrt(6)*sigma
+    # times the standard normal's (1+q)/2 quantile -- divide that back out.
+    scale = np.sqrt(6.0) * _NOISE_QUANTILE_Z
+    # Per axis, then take the larger: a track can be noisier across the view than
+    # along it, and under-stating the noise is the failure mode that hurts.
+    estimates = [
+        float(
+            np.quantile(
+                np.abs(second[:, axis] - np.median(second[:, axis])), _NOISE_QUANTILE
+            )
+        )
+        / scale
+        for axis in range(second.shape[1])
+    ]
+    return max(max(estimates), MIN_MEAS_STD_M)
 
 
 def trajectory_jerk(
@@ -219,7 +313,7 @@ def kalman_rts_smooth(
     fps: float,
     times: dict[int, float] | None = None,
     *,
-    meas_std: float = DEFAULT_MEAS_STD_M,
+    meas_std: float | None = None,
     process_std: float = DEFAULT_PROCESS_STD,
     gate_sigma: float = DEFAULT_GATE_SIGMA,
 ) -> NDArray[np.float64]:
@@ -230,7 +324,10 @@ def kalman_rts_smooth(
         positions: ``(n, 2)`` metric positions.
         fps: Frames per second (used when ``times`` is None).
         times: Optional ``{frame: t_sec}`` real timestamps (PTS) for VFR clips.
-        meas_std: Measurement noise std (m); larger -> smoother.
+        meas_std: Measurement noise std (m); larger -> smoother. Defaults to
+            :func:`estimate_measurement_std` on this track -- pass a value only
+            when you know the anchor's accuracy better than the data does, and
+            never a constant across tracks of differing provenance.
         process_std: Process (jerk) noise; smaller -> smoother / more prior.
         gate_sigma: Skip a measurement lying more than this many sigma from the
             prediction (innovation gating -- rejects real jumps, keeps noise).
@@ -243,8 +340,32 @@ def kalman_rts_smooth(
     if n < 3:
         return positions.copy()
     dt = _dt_seconds(frames, fps, times)
+    if meas_std is None:
+        meas_std = estimate_measurement_std(positions)
     meas_var = meas_std * meas_std
     out = np.empty_like(positions)
     out[:, 0] = _rts_smooth_axis(positions[:, 0], dt, meas_var, process_std, gate_sigma)
     out[:, 1] = _rts_smooth_axis(positions[:, 1], dt, meas_var, process_std, gate_sigma)
+
+    # Divergence guard, all-or-nothing per track. A smoothed path is allowed to
+    # shed noise, not to leave the observation: if the filter coasted (gate
+    # rejecting most samples) it produces a beautifully smooth line somewhere
+    # else entirely, and no jerk metric will say so. Mirrors the peak-speed guard
+    # in ``auto_reconstruct.refine_metric_from_contours`` -- when the stage cannot
+    # be trusted for this vehicle, hand back what it was given.
+    # MEDIAN deviation, not max: a diverged filter sits away from the data almost
+    # everywhere, whereas correctly rejecting a tracking spike means leaving one
+    # or two samples far behind -- which is the smoother working, not failing.
+    budget = max(DIVERGENCE_TOLERANCE_M, DIVERGENCE_TOLERANCE_SIGMA * meas_std)
+    # ...but never more than a fraction of how far the track actually travels.
+    # Scaling the budget by sigma alone is too generous for a SHORT, NOISY track,
+    # where the noise rivals the whole motion (yilan's 18-frame pedestrian: 0.39 m
+    # noise over 1.8 m of walking). There the filter has no signal to lock onto,
+    # trusts its prior and extrapolates -- turning a 1.4 m walk into an 11 m,
+    # 71 km/h sprint. A track that has to move by a large share of its own extent
+    # to look smooth is not being smoothed; it is being invented.
+    path_length = float(np.hypot(*np.diff(positions, axis=0).T).sum())
+    budget = min(budget, DIVERGENCE_TOLERANCE_EXTENT * path_length)
+    if float(np.median(np.hypot(*(out - positions).T))) > budget:
+        return positions.copy()
     return out

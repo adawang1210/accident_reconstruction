@@ -61,6 +61,11 @@
 真實涵蓋整段行車路線時才可靠；GCP 擠在小範圍時殘差會很漂亮，車速卻被嚴重低估
 （下表因此並列 GCP 涵蓋範圍，詳見 [`docs/summary.md`](docs/summary.md)）。
 
+圖中軌跡已套用 Kalman-RTS 平滑，`meas_std` 逐軌跡估計並帶發散守門——最終輸出與原始投影的
+端點距離，13 條軌跡有 11 條落在 ±11% 內，即**平滑貼著量測、沒有自行編造路徑**。撞擊後數幀
+與軌跡末端仍可能偏離數公尺（等加速模型表達不了脈衝式碰撞），詳見
+[`docs/TRAJECTORY_SMOOTHING.md`](docs/TRAJECTORY_SMOOTHING.md)。
+
 <table>
   <tr>
     <td width="50%" valign="top">
