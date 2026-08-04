@@ -42,6 +42,7 @@ from accident_reconstruction.ffmpeg_util import ensure_readable_mp4
 from accident_reconstruction.motion import euclidean, windowed_speed
 from accident_reconstruction.scene_config import SCENE, SceneConfig
 from accident_reconstruction.time_axis import load_frame_times, time_axis_warning
+from accident_reconstruction.track_ops import TrackArray, map_tracks
 
 PROMPT_TRACKS_CSV = SCENE.prompt_tracks_csv
 
@@ -141,19 +142,14 @@ def smooth_metric(
     Returns:
         Per-vehicle smoothed metric positions, at the same frames.
     """
-    smoothed: dict[str, dict[int, tuple[float, float]]] = {}
-    for label, track in metric.items():
-        frames = sorted(track)
-        if len(frames) < 3:
-            smoothed[label] = dict(track)  # too short to smooth; pass through
-            continue
-        positions = np.array([track[f] for f in frames], dtype=np.float64)
-        out = ts.kalman_rts_smooth(frames, positions, scene.fps)
-        smoothed[label] = {
-            frame: (float(out[i][0]), float(out[i][1]))
-            for i, frame in enumerate(frames)
-        }
-    return smoothed
+    # map_tracks supplies the pass-through for a track too short to smooth, and
+    # guarantees no vehicle is dropped -- the two invariants this stage exists to
+    # hold. See :mod:`track_ops`.
+    return map_tracks(
+        metric,
+        lambda track, _: ts.kalman_rts_smooth(track.frames, track.positions, scene.fps),
+        min_samples=3,
+    )
 
 
 # Reject the refined track if its PEAK speed exceeds the legacy peak by more than
@@ -450,13 +446,13 @@ def write_reconstruction_overlay_video(
         return None
 
     # Back-project each vehicle's metric track to pixels once.
-    pixels: dict[str, dict[int, tuple[float, float]]] = {}
-    for label, track in metric.items():
-        frames = sorted(track)
-        projected = VIEW_TRANSFORMER.inverse_transform_points(
-            np.array([track[f] for f in frames], dtype=np.float32)
-        )
-        pixels[label] = {f: tuple(projected[i]) for i, f in enumerate(frames)}
+    pixels = map_tracks(
+        metric,
+        lambda track, _: VIEW_TRANSFORMER.inverse_transform_points(
+            track.positions.astype(np.float32)
+        ),
+        min_samples=1,  # a single sample still back-projects to a drawable point
+    )
     colors = _overlay_colors(scene, list(metric))
 
     path = path or scene.reconstruction_overlay_video
@@ -893,24 +889,18 @@ def shape_preserving_metric(
         # and frame jitter; "preserving" that shape makes the path jagged. Only
         # shape-preserve a clean (undistorted) path -- else keep the homography.
         return {label: dict(track) for label, track in metric.items()}
-    out: dict[str, dict[int, tuple[float, float]]] = {}
-    for label, mtrack in metric.items():
-        frames = sorted(mtrack)
-        if len(frames) < 3 or label not in anchors:
-            out[label] = dict(mtrack)
-            continue
-        pixels = np.array([anchors[label][f] for f in frames], dtype=np.float64)
+
+    def place(track: TrackArray, label: str):
+        """Fit the recognised (undistorted) shape onto the homography track."""
+        if label not in anchors:
+            return None  # no pixels to preserve the shape of; keep the homography
+        pixels = np.array([anchors[label][f] for f in track.frames], dtype=np.float64)
         recognised = undistort_to_normalized(pixels, DISTORTION).astype(np.float64)
-        homography = np.array([mtrack[f] for f in frames], dtype=np.float64)
-        try:
-            placed = _similarity_transform(recognised, homography)(recognised)
-        except np.linalg.LinAlgError:
-            out[label] = dict(mtrack)
-            continue
-        out[label] = {
-            f: (float(placed[i, 0]), float(placed[i, 1])) for i, f in enumerate(frames)
-        }
-    return out
+        return _similarity_transform(recognised, track.positions)(recognised)
+
+    # A singular fit means the recognised points are degenerate (collinear or
+    # coincident); that vehicle keeps its homography track rather than failing.
+    return map_tracks(metric, place, min_samples=3, on_error=np.linalg.LinAlgError)
 
 
 def windowed_motion(
