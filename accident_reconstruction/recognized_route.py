@@ -281,10 +281,17 @@ def build_reconstruction() -> dict:
                 {
                     "frame": frame,
                     "t_sec": round(frame_seconds(times, frame, fps), 4),
-                    "x_m": round(east, 3),
-                    "z_m": round(north, 3),
-                    "lat": round(lat, 7),
-                    "lon": round(lon, 7),
+                    # 5 decimals of a metre (0.01 mm) and 9 of a degree (~0.1 mm),
+                    # NOT the mm / 1.1 cm that would be plenty for placing a point.
+                    # A viewer that differentiates the track amplifies rounding by
+                    # fps per derivative, and jerk is the third: at 23 fps, 1 mm of
+                    # quantisation alone is ~12 m/s^3 -- comparable to the 15 m/s^3
+                    # implausibility threshold, and it measurably swamped the
+                    # smoothed track (BMW mean |jerk| 3.4 in memory -> 21.7 here).
+                    "x_m": round(east, 5),
+                    "z_m": round(north, 5),
+                    "lat": round(lat, 9),
+                    "lon": round(lon, 9),
                     "speed_kmh": round(speeds.get(frame, (0.0, 0.0))[1] * factor, 1),
                     "is_impact": frame == impact_frame,
                 }

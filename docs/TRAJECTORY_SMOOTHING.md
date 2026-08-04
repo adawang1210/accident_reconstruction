@@ -48,7 +48,8 @@ Rauch–Tung–Striebel（RTS）遞迴。一次同時輸出**平滑的位置＋�
 ## 採用與實作
 `accident_reconstruction/trajectory_smoothing.py`：
 - `kalman_rts_smooth`：2D 等加速 Kalman + RTS 平滑（per-axis，處理非等時 dt 與 gap）。
-  接進 `auto_reconstruct.refine_metric_from_contours` 第 3 層，取代 Savitzky-Golay。
+  由 `auto_reconstruct.smooth_metric` 包裝，作為 `project_metric` 的**無條件最後一段**，
+  取代 Savitzky-Golay。管線順序是 **anchor 修正 → 峰值守門 → 平滑 → 空缺補值 → 再平滑**。
 - `trajectory_jerk`：驗收指標（平均/最大 |jerk|、變號次數、frac>15）。
 - `reject_kinematic_outliers`：獨立診斷工具（硬加速度上限）。**不被平滑器使用**。
 
@@ -74,6 +75,47 @@ SG 只壓振幅、**九成的幀仍不合運動學**；Kalman+RTS 把 jerk 降�
 降到 5%（機車 0%），路徑僅移數公分（忠實不失真），且**過彎不切角**（合成正弦曲線 err 0.007，
 低於雜訊底 0.033）。
 
-**已知小殘留**：管線最後的**空缺補值**（`interpolate_straight_gaps`）是在 Kalman 之後插入
-線性段，與已平滑的曲線段在邊界不 jerk-連續，讓機車最終 `frac>15` 從 0% 回到約 11%（仍遠優於
-SG 的 91%）。日後可在補值後再做一次輕量 Kalman 收尾消除邊界。
+## 後續修正（涵蓋率與序列化）
+上面那張表只成立於「平滑真的有跑到」的軌跡。六個場景逐車輛稽核後發現兩個破口，皆已修掉。
+
+### ① 平滑曾被綁在輪廓修正裡，13 條軌跡只有 6 條吃得到
+`kalman_rts_smooth` 原本是 `refine_metric_from_contours` 內的「第 3 層」，於是有三條路徑
+會靜默跳過它：場景沒有 `contact_contours.npz`（keelung、宜蘭娃娃車，共 4 條）、該車輛沒有
+輪廓、以及**峰值速度守門退回 legacy anchor 時**——守門退回的是**完全未平滑的原始軌跡**
+（pre_impact car、taoyuan car2、yilan car）。
+
+改法：抽出 `smooth_metric`，作為 `project_metric` 的無條件最後一段；守門只決定「用哪個
+anchor」，不再連帶決定「要不要平滑」。另外在補值**之前**先對守門勝出的軌跡平滑一次——
+`interpolate_straight_gaps` 是用缺口前後的**航向是否一致**來判斷該不該補，餵原始 anchor
+會讓航向估計太雜訊，把轉彎誤判成直行（實測會多補 BMW 3 個原本正確拒絕的缺口）。
+
+修正後全 13 條軌跡 mean |jerk|（m/s³，原始 → 修正後）：
+
+| 場景 | 車輛 | mean \|jerk\| | frac>15 |
+|---|---|---|---|
+| keelung | taxi / police_car | 8358→3.2 / 15253→11.2 | 99%→0% / 100%→33% |
+| pre_impact | car / motorcycle | 8315→5.5 / 3424→8.9 | 81%→10% / 81%→21% |
+| taoyuan | car / car2 | 2846→3.9 / 14450→9.8 | 100%→0% / 100%→30% |
+| yilan | car / motorcycle / person | 15277→4.4 / 16644→3.1 / 49969→2.8 | 92%→5% / 97%→0% / 100%→0% |
+| BMW | car / motorbike | 854→2.8 / 1262→2.6 | 89%→**0%** / 79%→**0%** |
+
+「補值後再平滑」也順手解掉了原本的已知殘留：補值插入的線性段與平滑曲線在邊界不 jerk-連續，
+BMW 機車最終 `frac>15` 曾因此從 0% 回到約 11%，現在收在 0%。
+
+仍偏高的幾條（police_car 33%、宜蘭 car 53%、taoyuan car2 30%）mean |jerk| 都落在門檻 15
+附近，屬於**參數未隨場景調**的問題：`meas_std` / `process_std` 是在 BMW（23 fps）上手調的
+常數，但地面量測噪音並不均勻（遠處一像素投影到地面的誤差遠大於近處），fps 也橫跨 23–30。
+下一步應由單應性 Jacobian 逐幀給 per-sample `R`，`process_std` 改用 NIS 檢定自動調。
+
+### ② 序列化把平滑成果吃掉
+三階微分會把量化誤差放大 fps³。CSV 的 lat/lon 原本寫 7 位小數（≈1.1 cm）、reconstruction
+JSON 的 `x_m`/`z_m` 寫 3 位（1 mm），於是**前端與網頁地圖讀到的根本不是平滑後的軌跡**：
+
+| BMW car，同一條軌跡 | mean \|jerk\| | frac>15 |
+|---|---|---|
+| 記憶體 metric | 2.8 | 0% |
+| reconstruction.json（3 位 → **5 位**） | 21.7 → **2.8** | 72% → **0%** |
+| route_recognized.csv（7 位 → **9 位**） | 455 → **3.9** | 91% → **1.2%** |
+
+`route_csv_row` 改 `:.9f`（≈0.1 mm）、`build_reconstruction` 的軌跡樣本改 `round(_, 5)` /
+`round(_, 9)`。KML 維持 7 位——它只給 Google Earth 顯示，不會被微分。

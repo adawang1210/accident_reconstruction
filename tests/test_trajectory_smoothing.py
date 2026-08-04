@@ -93,3 +93,53 @@ def test_jerk_metric_zero_for_constant_velocity() -> None:
     assert ts.trajectory_jerk(frames, pos, 25.0)["mean_abs"] == pytest.approx(
         0.0, abs=1e-9
     )
+
+
+def test_smooth_metric_covers_every_vehicle() -> None:
+    """Regression: smoothing reaches EVERY track, not only refined ones.
+
+    Smoothing used to be a layer inside the contour refinement, which meant three
+    paths silently skipped it (no sidecar, no contour for this vehicle, or the
+    peak-speed guard reverting to the raw legacy anchor). It is now an
+    unconditional stage over whatever the refinement returned.
+    """
+    from accident_reconstruction.auto_reconstruct import smooth_metric
+
+    rng = np.random.default_rng(2)
+    frames = list(range(40))
+    truth = np.column_stack([np.linspace(0, 20, 40), np.zeros(40)])
+    noisy = truth + rng.normal(scale=0.05, size=truth.shape)
+    metric = {
+        "car": {
+            f: (float(noisy[i][0]), float(noisy[i][1])) for i, f in enumerate(frames)
+        },
+        "person": {0: (0.0, 0.0), 1: (1.0, 0.0)},  # too short to smooth
+    }
+
+    out = smooth_metric(metric)
+
+    car_frames = sorted(out["car"])
+    before = ts.trajectory_jerk(frames, noisy, 25.0)
+    after = ts.trajectory_jerk(
+        car_frames, np.array([out["car"][f] for f in car_frames]), 25.0
+    )
+    assert after["mean_abs"] < before["mean_abs"] / 10
+    assert car_frames == frames  # same frames in, same frames out
+    assert out["person"] == metric["person"]  # short track passes through intact
+
+
+def test_route_csv_row_keeps_enough_decimals_to_survive_differentiation() -> None:
+    """The delivered CSV must not re-quantise the smoothed track back into jerk.
+
+    7 decimals of a degree is ~1.1 cm; differentiated three times at video rate
+    that alone is hundreds of m/s^3, which buried the smoother's output in the
+    artefact the web map actually reads.
+    """
+    from accident_reconstruction.birdseye_manual_annotation import route_csv_row
+
+    row = route_csv_row(12, "car", 25.041234567891, 121.512345678912, 33.33, 12)
+
+    _, _, lat, lon, _, _ = row.split(",")
+    assert len(lat.split(".")[1]) == 9
+    assert len(lon.split(".")[1]) == 9
+    assert float(lat) == pytest.approx(25.041234568, abs=1e-9)

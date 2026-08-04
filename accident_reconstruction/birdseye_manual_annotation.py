@@ -952,9 +952,18 @@ ROUTE_CSV_HEADER = "frame,vehicle,lat,lon,speed_kmh,is_impact"
 def route_csv_row(
     frame: int, label: str, lat: float, lon: float, speed: float, impact_frame
 ) -> str:
-    """One route-CSV row in the shared schema (:data:`ROUTE_CSV_HEADER`)."""
+    """One route-CSV row in the shared schema (:data:`ROUTE_CSV_HEADER`).
+
+    Lat/lon carry 9 decimals (~0.1 mm), not the 7 (~1.1 cm) that is conventional
+    for map data. A consumer that DIFFERENTIATES these positions amplifies the
+    rounding by fps per derivative, and jerk is the third: at 23 fps, 1.1 cm of
+    quantisation becomes ~1.1e-2 * 23^3 ~ 130 m/s^3 of pure numerical jerk --
+    enough to bury the smoother's output entirely (on BMW the track's mean
+    |jerk| went 3.4 m/s^3 in memory to 455 in the 7-decimal CSV). 9 decimals
+    puts the quantisation jerk ~100x below the smoothed signal.
+    """
     return (
-        f"{frame},{label},{lat:.7f},{lon:.7f},{speed:.1f},{int(frame == impact_frame)}"
+        f"{frame},{label},{lat:.9f},{lon:.9f},{speed:.1f},{int(frame == impact_frame)}"
     )
 
 

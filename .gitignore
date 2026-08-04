@@ -187,3 +187,11 @@ frontend/.env.*.local
 frontend/public/reconstruction.json
 # 真實場景重建結果（含真實事故經緯度），由 `npm run sync:scenes` 從 data/ 產生
 frontend/public/scenes/
+
+# Mapillary API token (secret, local only)
+.mapillary_token
+
+# 3D 場景重建產物（數十 MB 二進位,由重建流程產生,不入版控）
+frontend/public/*.splat
+frontend/public/*.ply
+!frontend/public/sample.splat

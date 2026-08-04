@@ -85,14 +85,16 @@ def load_anchors(csv_path: Path) -> dict[str, dict[int, tuple[float, float]]]:
 
 def project_metric(
     anchors: dict[str, dict[int, tuple[float, float]]],
+    scene: SceneConfig = SCENE,
 ) -> dict[str, dict[int, tuple[float, float]]]:
     """Project pixel anchors onto the metric ground plane via the homography.
 
     Args:
         anchors: Per-vehicle pixel anchors by frame.
+        scene: Active scene (drives the contour refinement and the smoother's fps).
 
     Returns:
-        Per-vehicle metric ``(east_m, north_m)`` by frame.
+        Per-vehicle metric ``(east_m, north_m)`` by frame, refined and smoothed.
     """
     metric: dict[str, dict[int, tuple[float, float]]] = {}
     for label, by_frame in anchors.items():
@@ -102,7 +104,56 @@ def project_metric(
                 np.array([anchor], dtype=np.float32)
             )[0]
             metric[label][frame] = (float(point[0]), float(point[1]))
-    return refine_metric_from_contours(metric)
+    return smooth_metric(refine_metric_from_contours(metric, scene), scene)
+
+
+def smooth_metric(
+    metric: dict[str, dict[int, tuple[float, float]]],
+    scene: SceneConfig = SCENE,
+) -> dict[str, dict[int, tuple[float, float]]]:
+    """Constant-acceleration Kalman + RTS smoothing of every vehicle track.
+
+    The LAST stage of :func:`project_metric`, and deliberately UNCONDITIONAL:
+    smoothing is a property of the motion, not of the anchor, so it must not
+    depend on the contour refinement succeeding. It used to live inside
+    :func:`refine_metric_from_contours` as "layer 3", which silently skipped it
+    on three separate paths -- a scene with no contour sidecar, a vehicle with no
+    contour, and (most surprisingly) any vehicle whose refined anchor lost the
+    peak-speed guard, because the guard reverts to the RAW legacy track. Across
+    the six recorded scenes that left 7 of 13 vehicle tracks entirely unsmoothed.
+
+    A local polynomial (Savitzky-Golay) only shrinks noise AMPLITUDE and leaves
+    the motion kinematically implausible -- on BMW ~92% of frames still exceeded
+    the 15 m/s^3 jerk threshold. The CA Kalman + RTS smoother imposes a physical
+    prior (continuous velocity + acceleration), dropping that to a few percent
+    while moving the path only a few cm, and it represents turns naturally rather
+    than rounding them. See ``docs/TRAJECTORY_SMOOTHING.md``.
+
+    Running here also puts the smoother AFTER the gap fill
+    (:func:`ground_footprint.interpolate_straight_gaps`), so the straight
+    interpolated run and the tracked curve either side of it are smoothed as one
+    series instead of meeting at a jerk discontinuity.
+
+    Args:
+        metric: Per-vehicle metric positions by frame.
+        scene: Active scene (supplies ``fps``).
+
+    Returns:
+        Per-vehicle smoothed metric positions, at the same frames.
+    """
+    smoothed: dict[str, dict[int, tuple[float, float]]] = {}
+    for label, track in metric.items():
+        frames = sorted(track)
+        if len(frames) < 3:
+            smoothed[label] = dict(track)  # too short to smooth; pass through
+            continue
+        positions = np.array([track[f] for f in frames], dtype=np.float64)
+        out = ts.kalman_rts_smooth(frames, positions, scene.fps)
+        smoothed[label] = {
+            frame: (float(out[i][0]), float(out[i][1]))
+            for i, frame in enumerate(frames)
+        }
+    return smoothed
 
 
 # Reject the refined track if its PEAK speed exceeds the legacy peak by more than
@@ -155,6 +206,9 @@ def refine_metric_from_contours(
 
     Returns ``metric`` unchanged when the sidecar is absent or the transformer is
     unset, so clips tracked before the sidecar existed keep their legacy anchor.
+    Smoothing is NOT part of this -- it is a separate, unconditional stage
+    (:func:`smooth_metric`) precisely so that these bail-outs, and the
+    peak-speed guard below, cannot silently cost a vehicle its smoothing.
 
     Args:
         metric: Per-vehicle legacy metric positions by frame (used as the
@@ -199,15 +253,6 @@ def refine_metric_from_contours(
             label, frames, positions, per_frame, lengths.get(label)
         )
 
-        # --- Layer 3: constant-acceleration Kalman + RTS smoothing. A local
-        # polynomial (Savitzky-Golay) only shrinks noise AMPLITUDE and leaves the
-        # motion kinematically implausible -- on BMW ~92% of frames still exceed
-        # the 15 m/s^3 jerk threshold. The CA Kalman + RTS smoother imposes a
-        # physical prior (continuous velocity + acceleration), dropping that to 0%
-        # (~100x lower jerk) while moving the path only a few cm, and it represents
-        # turns naturally rather than rounding them. See docs/TRAJECTORY_SMOOTHING.md.
-        positions = ts.kalman_rts_smooth(frames, positions, scene.fps)
-
         # --- No-regression guard (all-or-nothing per vehicle). The on-contour
         # anchor helps WIDE objects (a car's box-corner sits far off the body),
         # but for a NARROW one (a motorbike) the legacy anchor is already on the
@@ -215,6 +260,9 @@ def refine_metric_from_contours(
         # speed, usually across a tracking gap. Rather than special-case classes,
         # keep the refined track only when it does not manufacture a peak speed
         # far above the legacy one; otherwise legacy was better here, so keep it.
+        # Both sides are UNSMOOTHED here (the smoother runs after this function,
+        # in project_metric), so the comparison isolates the anchor -- which is
+        # what the guard is about -- and losing it no longer costs the smoothing.
         legacy_positions = np.array([track[f] for f in frames], dtype=np.float64)
         refined_peak = _peak_speed_kmh(frames, positions, scene.fps)
         legacy_peak = _peak_speed_kmh(frames, legacy_positions, scene.fps)
@@ -224,7 +272,20 @@ def refine_metric_from_contours(
             chosen_frames = frames
             chosen_positions = legacy_positions
 
-        # --- Layer 4: bridge SAM2's tracking gaps on STRAIGHT runs by
+        # Denoise the WINNER before the gap fill reads it. interpolate_straight_gaps
+        # decides whether to bridge a gap by comparing the heading just before and
+        # just after it, and a heading estimated from raw anchors is noisy enough to
+        # let a turn pass as "straight" (feeding it the unsmoothed track bridged 3 of
+        # BMW's gaps that the smoothed one correctly declined). This runs on
+        # chosen_positions, i.e. AFTER the guard, so a vehicle that fell back to the
+        # legacy anchor is denoised just the same. project_metric smooths again once
+        # the gaps are filled -- that pass is what blends the interpolated straight
+        # run into the tracked curve either side of it.
+        chosen_positions = ts.kalman_rts_smooth(
+            chosen_frames, chosen_positions, scene.fps
+        )
+
+        # --- Layer 3: bridge SAM2's tracking gaps on STRAIGHT runs by
         # interpolation, so the trajectory (and the overlay video's line) is
         # continuous instead of vanishing where the tracker dropped the object.
         # A gap spanning a TURN is left open -- a straight line would cut the
