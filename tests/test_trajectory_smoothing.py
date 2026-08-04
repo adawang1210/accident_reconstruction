@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import numpy as np
 import pytest
 
@@ -301,14 +303,30 @@ def test_short_noisy_track_is_not_invented() -> None:
 # are not the same property.
 
 
-def _shape(frames: list[int], positions: np.ndarray, fps: float) -> tuple[float, float]:
+def _shape(
+    frames: list[int],
+    positions: np.ndarray,
+    fps: float,
+    impact_frame: int | None = None,
+) -> tuple[float, float]:
     """The two acceptance measures: p99 turn angle (deg), max cornering (m/s^2)."""
-    angles = ts.turn_angles_deg(positions)
-    accel = ts.lateral_accelerations(frames, positions, fps)
-    return (
-        float(np.percentile(angles, 99)) if angles.size else 0.0,
-        float(accel.max()) if accel.size else 0.0,
-    )
+    metrics = ts.shape_metrics(frames, positions, fps, impact_frame=impact_frame)
+    return metrics["turn_p99"], metrics["lateral_max"]
+
+
+def _collision_track(fps: float, n: int, deflection_deg: float):
+    """A straight run that changes direction sharply at the impact, then runs on.
+
+    The shape of every clip in the recorded set: a vehicle travelling in a line,
+    struck, and deflected. The corner is the finding; everything else is motion
+    that should smooth.
+    """
+    frames = list(range(n))
+    impact = n // 2
+    step = 8.0 / fps
+    heading = np.where(np.arange(n - 1) < impact, 0.0, np.radians(deflection_deg))
+    steps = np.column_stack([step * np.cos(heading), step * np.sin(heading)])
+    return frames, impact, np.vstack([np.zeros(2), np.cumsum(steps, axis=0)])
 
 
 def test_slow_track_is_smooth_in_shape_not_only_in_jerk() -> None:
@@ -470,9 +488,147 @@ def test_smooth_metric_delivers_a_smooth_shape() -> None:
     assert cornering <= ts.MAX_LATERAL_ACCEL_MPS2
 
 
+def test_impact_deflection_is_not_smoothed_away() -> None:
+    """The headline regression: the crash must survive the smoothing.
+
+    Fitted as ONE curve, the real corner at the impact keeps the turn-angle
+    criterion failing however far lambda is pushed, so the walk runs to the end
+    of the grid and straightens the WHOLE track to pay for one local feature. On
+    BMW's motorbike that moved the start 1.77 m, cut the path 6.04 m -> 3.54 m,
+    and flattened the direction change that is the main evidence in the clip --
+    while the median deviation stayed a respectable 0.22 m, so nothing in the
+    numbers complained. Splitting at the impact is what keeps the corner.
+    """
+    fps, n = 25.0, 120
+    frames, impact, path = _collision_track(fps, n, deflection_deg=55.0)
+
+    fitted = ts.fit_smooth_curve(
+        frames, path, fps, measurements=path, impact_frame=impact
+    )
+
+    def heading(positions, a, b):
+        span = positions[b] - positions[a]
+        return np.degrees(np.arctan2(span[1], span[0]))
+
+    # The deflection is still there, to within a couple of degrees...
+    before = heading(fitted, 2, impact - 2)
+    after = heading(fitted, impact + 2, n - 3)
+    assert abs((after - before) - 55.0) < 5.0
+    # ...and the track was not straightened to buy it.
+    assert np.hypot(*(fitted - path).T).max() < 0.5
+    kept = np.hypot(*np.diff(fitted, axis=0).T).sum()
+    assert kept > 0.9 * np.hypot(*np.diff(path, axis=0).T).sum()
+
+
+def test_fit_spanning_the_impact_would_destroy_it() -> None:
+    """Companion to the above: shows the split is doing the work, not luck."""
+    fps, n = 25.0, 120
+    frames, impact, path = _collision_track(fps, n, deflection_deg=55.0)
+
+    whole = ts.fit_smooth_curve(frames, path, fps, measurements=path)
+    split = ts.fit_smooth_curve(
+        frames, path, fps, measurements=path, impact_frame=impact
+    )
+
+    # Fitted whole the corner is rounded off; split, it is kept.
+    assert np.hypot(*(whole - path).T).max() > np.hypot(*(split - path).T).max()
+
+
+def test_shape_cap_stops_a_track_being_reshaped() -> None:
+    """No fit may move any sample more than a set share of the path length.
+
+    The guard the median budget could not provide. A median stays small while a
+    fit relocates one END of the track, which is exactly how BMW's motorbike lost
+    1.77 m at its start without tripping anything.
+    """
+    fps, n = 25.0, 120
+    frames, _, path = _collision_track(fps, n, deflection_deg=90.0)
+
+    fitted = ts.fit_smooth_curve(frames, path, fps, measurements=path)
+
+    length = float(np.hypot(*np.diff(path, axis=0).T).sum())
+    assert np.hypot(*(fitted - path).T).max() <= ts.MAX_SHAPE_DEVIATION_EXTENT * length
+
+
+def test_shape_metrics_excludes_the_impact_seam() -> None:
+    """A kept collision corner is the finding, not a defect to report."""
+    fps, n = 25.0, 120
+    frames, impact, path = _collision_track(fps, n, deflection_deg=55.0)
+
+    # Read on the cornering, not the turn angle: the seam is ONE sample wide, and
+    # a p99 over 118 samples steps straight over it -- the same blind spot that
+    # made ``lateral_max`` a max in the first place.
+    assert _shape(frames, path, fps)[1] > ts.MAX_LATERAL_ACCEL_MPS2  # seam counted
+    assert _shape(frames, path, fps, impact)[1] <= ts.MAX_LATERAL_ACCEL_MPS2
+    assert ts.shape_metrics(frames, path, fps, impact_frame=impact)["runs"] == 2
+
+
+def test_standstill_jitter_neither_vetoes_nor_certifies() -> None:
+    """Wreckage that stops must not block smoothing -- nor fake a pass.
+
+    Both failures happened, from the same knob. With the step floor at a fraction
+    of the MEDIAN step, a track that is stationary for most of its samples sets
+    that median to the standstill jitter itself, and sub-millimetre "turns" of 19
+    degrees vetoed every candidate. Moving the floor up to the measurement noise
+    fixed that and broke the opposite way: a track whose steps are the SIZE of
+    its noise -- the whole reason this stage exists -- had every segment excluded,
+    so nothing could fail and the input came back unsmoothed.
+    """
+    rng = np.random.default_rng(11)
+    fps, n = 23.0, 160
+    frames = list(range(n))
+    noise = 0.03
+    # Moves at ~ the noise per frame, then stops dead for the rest.
+    moving = np.column_stack([np.linspace(0.0, 3.0, 100), np.zeros(100)])
+    stopped = np.column_stack([np.full(60, 3.0), np.zeros(60)])
+    path = np.vstack([moving, stopped]) + rng.normal(scale=noise, size=(n, 2))
+
+    fitted = ts.fit_smooth_curve(frames, path, fps, measurements=path)
+
+    # It ran (the standstill did not veto it)...
+    assert not np.array_equal(fitted, path)
+    # ...and it actually smoothed the moving part, rather than passing it through
+    # because every segment had been excluded from the criteria.
+    assert _shape(frames[:100], fitted[:100], fps)[0] <= ts.CURVE_TURN_TARGET_DEG
+    assert _shape(frames[:100], path[:100], fps)[0] > ts.CURVE_TURN_TARGET_DEG
+
+
 def test_turn_angles_of_a_straight_line_are_zero() -> None:
     straight = np.column_stack([np.arange(6.0), np.zeros(6)])
     assert ts.turn_angles_deg(straight).max() == pytest.approx(0.0, abs=1e-9)
+
+
+def test_figure_markers_do_not_merge_into_a_lumpy_line() -> None:
+    """Not every saw-tooth was in the data -- some of it was the drawing.
+
+    The recognised figure drew a filled dot at EVERY frame. Wherever the vehicle
+    moved less than a marker width per frame the dots overlapped into a blob
+    whose ragged edge read as a jagged path, on trajectories that are clean
+    curves when rendered as a bare line. Markers must stay at least a diameter
+    apart.
+    """
+    from accident_reconstruction.recognized_route import _MARKER_RADIUS, _spaced
+
+    crawl = [(100.0 + 0.5 * i, 200.0) for i in range(60)]  # 0.5 px per frame
+
+    kept = _spaced(crawl, _MARKER_RADIUS)
+
+    gaps = [np.hypot(b[0] - a[0], b[1] - a[1]) for a, b in pairwise(kept)]
+    # Every gap except the last (which just carries the end point) clears a
+    # marker diameter, and the run's extent is still drawn end to end.
+    assert min(gaps[:-1]) >= 2 * _MARKER_RADIUS
+    assert kept[0] == crawl[0]
+    assert kept[-1] == crawl[-1]
+    assert len(kept) < len(crawl)
+
+
+def test_figure_markers_are_all_kept_when_already_spread() -> None:
+    """A fast vehicle keeps every sample -- the thinning is density-driven."""
+    from accident_reconstruction.recognized_route import _MARKER_RADIUS, _spaced
+
+    quick = [(100.0 + 20.0 * i, 200.0) for i in range(10)]
+
+    assert _spaced(quick, _MARKER_RADIUS) == quick
 
 
 def test_short_track_skips_the_curve_fit() -> None:

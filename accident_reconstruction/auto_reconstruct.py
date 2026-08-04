@@ -137,11 +137,15 @@ def smooth_metric(
 
     Args:
         metric: Per-vehicle metric positions by frame.
-        scene: Active scene (supplies ``fps``).
+        scene: Active scene (supplies ``fps`` and the impact-frame override).
 
     Returns:
         Per-vehicle smoothed metric positions, at the same frames.
     """
+    # Detected from the tracks passed IN, never by re-projecting: the default
+    # path of resolve_impact_frame calls project_metric, which calls this
+    # function. Passing the metric keeps it a plain lookup.
+    impact_frame = resolve_impact_frame(scene, metric)
 
     # map_tracks supplies the pass-through for a track too short to smooth, and
     # guarantees no vehicle is dropped -- the two invariants this stage exists to
@@ -153,9 +157,15 @@ def smooth_metric(
         # because heading noise scales with wobble/step and a slow vehicle's step
         # is no bigger than its wobble. Both faithfulness guards measure against
         # ``track.positions`` -- the anchors as they entered this stage -- so the
-        # two passes cannot drift off the data one after the other.
+        # two passes cannot drift off the data one after the other. The impact is
+        # passed so the fit does not span the collision: a crash is an impulse,
+        # and a single smooth curve through it can only survive by denying it.
         return ts.fit_smooth_curve(
-            track.frames, kalman, scene.fps, measurements=track.positions
+            track.frames,
+            kalman,
+            scene.fps,
+            measurements=track.positions,
+            impact_frame=impact_frame,
         )
 
     return map_tracks(metric, smooth, min_samples=3)

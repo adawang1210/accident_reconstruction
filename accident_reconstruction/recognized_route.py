@@ -191,6 +191,53 @@ def _display_for(label: str, index: int) -> dict:
     return {"name": label, "rgb": _FALLBACK_RGB[index % len(_FALLBACK_RGB)]}
 
 
+#: Radius, in pixels, of the per-sample dot drawn along a recognised trajectory.
+_MARKER_RADIUS = 3
+
+
+def _spaced(
+    points: list[tuple[float, float]], radius: float
+) -> list[tuple[float, float]]:
+    """Thin ``points`` so consecutive markers do not overlap on the figure.
+
+    The dots exist to show the sampling -- where the vehicle was slow, where the
+    tracker dropped out. Drawn at EVERY frame they stop doing that: wherever the
+    vehicle is slower than about ``radius`` per frame the dots overlap into a
+    lumpy blob whose ragged edge reads as a saw-toothed path, even when the
+    underlying trajectory is a clean curve. That accounted for much of the
+    jaggedness in the README figures -- rendering the same tracks as a bare line
+    shows a smooth curve.
+
+    Keeping one dot per marker-width preserves what the dots are for (sparse
+    where the vehicle is quick, dense where it is slow) without letting them
+    misrepresent the shape.
+
+    Args:
+        points: Pixel positions along one trajectory, in frame order.
+        radius: Marker radius in pixels; markers are kept a diameter apart.
+
+    Returns:
+        The subset to draw. The first and last are always kept, so the run's
+        extent still reads correctly.
+
+    Examples:
+        ```python
+        _spaced([(0.0, 0.0), (1.0, 0.0), (20.0, 0.0)], 3)
+        # [(0.0, 0.0), (20.0, 0.0)]
+        ```
+    """
+    if not points:
+        return []
+    spacing = 2.0 * radius
+    kept = [points[0]]
+    for point in points[1:-1]:
+        if math.hypot(point[0] - kept[-1][0], point[1] - kept[-1][1]) >= spacing:
+            kept.append(point)
+    if len(points) > 1:
+        kept.append(points[-1])
+    return kept
+
+
 def _calibration_ready() -> bool:
     """True when the homography is georeferenced -- all the recognised view needs.
 
@@ -432,8 +479,16 @@ def write_recognized_figure(figure_path: Path | None = None) -> Path | None:
         frames = sorted(track)
         pts = [to_px(track[f]) for f in frames]
         draw.line(pts, fill=rgb, width=3, joint="curve")
-        for px, py in pts:  # every recognised sample, so the real shape is visible
-            draw.ellipse([px - 3, py - 3, px + 3, py + 3], fill=rgb)
+        for px, py in _spaced(pts, _MARKER_RADIUS):
+            draw.ellipse(
+                [
+                    px - _MARKER_RADIUS,
+                    py - _MARKER_RADIUS,
+                    px + _MARKER_RADIUS,
+                    py + _MARKER_RADIUS,
+                ],
+                fill=rgb,
+            )
         sx, sy = pts[0]
         draw.ellipse(
             [sx - 6, sy - 6, sx + 6, sy + 6], fill=(255, 255, 255), outline=rgb, width=2

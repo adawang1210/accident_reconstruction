@@ -117,10 +117,50 @@ _CURVE_LAMBDAS = np.logspace(-8.0, 8.0, 65)
 # A segment shorter than this fraction of the track's median step has no
 # meaningful direction, so its turn angle is noise about noise; excluded from the
 # percentile rather than allowed to veto every candidate.
+#
+# Relative to the MEDIAN step, this rule breaks on exactly the track that needs
+# it: a vehicle that stops. BMW's motorbike is stationary wreckage for most of
+# its 106 post-impact samples, so the median step IS the standstill jitter and
+# the floor lands below the noise it was meant to exclude -- 19-degree "turns"
+# over 0.1 cm steps, a fortieth of a pixel on the figure, were vetoing every
+# candidate fit. Hence the absolute floor as well (``min_step_m``).
 _MIN_SEGMENT_FRACTION = 0.05
 
+# ...and that absolute floor is a SMALL FRACTION of the measurement noise, not
+# the noise itself. Setting it at the noise excludes every step of a track whose
+# steps are the size of its noise -- which is the exact regime this whole stage
+# exists for. Then no segment has a direction, nothing can fail the turn-angle
+# test, and the first candidate is accepted unsmoothed: BMW's car came back
+# byte-identical to its input while the figure still drew a saw blade. A quarter
+# of the noise separates standstill (BMW's wreckage moves a fortieth of the
+# noise per frame) from slow-but-real motion without swallowing the latter.
+_STATIONARY_STEP_FRACTION = 0.25
 
-def turn_angles_deg(positions: NDArray[np.float64]) -> NDArray[np.float64]:
+# Shape-fidelity cap: the WORST sample may not move more than this share of the
+# track's own path length.
+#
+# The median-deviation budget the Kalman pass uses cannot see this failure. When
+# a track carries a REAL sharp corner, that corner keeps the turn-angle criterion
+# failing however far lambda is pushed, so the walk runs to the end of the grid
+# and the whole track is straightened to pay for one local feature. On BMW's
+# motorbike that moved the start point 1.77 m, cut the path from 6.04 m to
+# 3.54 m, and flattened the direction change at the impact -- while the MEDIAN
+# deviation stayed at a respectable 0.22 m. A median is the right guard for the
+# Kalman pass, which rejects outliers and so legitimately leaves one or two
+# samples behind; it is the wrong guard for a fit that moves the whole shape.
+#
+# 15% of path length is loose enough for real de-noising (BMW's car moves 4.7% at
+# its worst) and tight enough that no track can be reshaped into a different one.
+MAX_SHAPE_DEVIATION_EXTENT = 0.15
+
+# Shortest run either side of the impact that is still worth fitting separately;
+# below it the split is skipped and the track is fitted whole.
+MIN_SEGMENT_SAMPLES = 6
+
+
+def turn_angles_deg(
+    positions: NDArray[np.float64], *, min_step_m: float | None = None
+) -> NDArray[np.float64]:
     """Heading change (degrees, 0-180) between each pair of consecutive segments.
 
     The direct measure of how saw-toothed a drawn route looks: a smooth curve
@@ -129,11 +169,16 @@ def turn_angles_deg(positions: NDArray[np.float64]) -> NDArray[np.float64]:
 
     Args:
         positions: ``(n, 2)`` positions of one track.
+        min_step_m: Steps shorter than this carry no direction and are skipped
+            -- standstill jitter, whose heading is set by the noise. Pass a small
+            fraction of the measurement noise, NOT the noise itself (see
+            :data:`_STATIONARY_STEP_FRACTION`). Defaults to a fraction of the
+            median step, unreliable on a track that mostly stands still
+            (see :data:`_MIN_SEGMENT_FRACTION`).
 
     Returns:
-        ``(m,)`` angles for the segments long enough to have a direction
-        (see :data:`_MIN_SEGMENT_FRACTION`); empty when the track is too short
-        or degenerate.
+        ``(m,)`` angles for the segments long enough to have a direction; empty
+        when the track is too short or degenerate.
 
     Examples:
         ```python
@@ -148,7 +193,7 @@ def turn_angles_deg(positions: NDArray[np.float64]) -> NDArray[np.float64]:
     segments = np.diff(positions, axis=0)
     lengths = np.hypot(segments[:, 0], segments[:, 1])
     median_step = float(np.median(lengths))
-    floor = max(_MIN_SEGMENT_FRACTION * median_step, 1e-12)
+    floor = max(_MIN_SEGMENT_FRACTION * median_step, min_step_m or 0.0, 1e-12)
     headings = np.degrees(np.arctan2(segments[:, 1], segments[:, 0]))
     change = np.abs(np.diff(headings))
     change = np.minimum(change, 360.0 - change)
@@ -202,6 +247,72 @@ def lateral_accelerations(
     return yaw_rate * mid_speed
 
 
+def shape_metrics(
+    frames: list[int],
+    positions: NDArray[np.float64],
+    fps: float,
+    times: dict[int, float] | None = None,
+    *,
+    impact_frame: int | None = None,
+    min_step_m: float | None = None,
+) -> dict[str, float]:
+    """How saw-toothed a track draws, measured WITHIN each run.
+
+    The acceptance measures for :func:`fit_smooth_curve`, and the ones to assert
+    on. Two things make a drawn route look unsmooth, and jerk sees neither:
+    per-sample zig-zag (``turn_p99``) and the elbow (``lateral_max``).
+
+    Excludes the seam at ``impact_frame``. A collision is an impulse, so the
+    direction change there is the reconstruction's finding, not a defect -- on
+    BMW's motorbike it is the main evidence in the clip. Counting it makes a
+    correct track look like a failure: measured across the seam that same track
+    reports a 36 degree turn and 90 m/s^2 of cornering, all of it one sample
+    wide. Smoothing across the seam instead is what this module must never do
+    (see :func:`fit_smooth_curve`).
+
+    Args:
+        frames: Frame numbers, ascending.
+        positions: ``(n, 2)`` positions of one track.
+        fps: Frames per second (used when ``times`` is None).
+        times: Optional ``{frame: t_sec}`` real timestamps (PTS) for VFR clips.
+        impact_frame: Contact frame whose seam is excluded, if any.
+        min_step_m: Shortest step with a meaningful direction; defaults to
+            :data:`_STATIONARY_STEP_FRACTION` of the track's estimated noise
+            (see :func:`turn_angles_deg`).
+
+    Returns:
+        ``{"turn_p99", "lateral_max", "runs"}`` -- p99 per-sample turn angle in
+        degrees, worst lateral acceleration in m/s^2, and how many runs the
+        track was measured in (2 when it was split at the impact, else 1).
+
+    Examples:
+        ```python
+        straight = np.column_stack([np.arange(8.0), np.zeros(8)])
+        shape_metrics(list(range(8)), straight, 25.0)["turn_p99"]
+        # 0.0
+        ```
+    """
+    positions = np.asarray(positions, dtype=np.float64)
+    if min_step_m is None:
+        min_step_m = _STATIONARY_STEP_FRACTION * estimate_measurement_std(positions)
+    split = _impact_split(frames, impact_frame)
+    bounds = [(0, len(frames))] if split is None else [(0, split), (split, len(frames))]
+    angles: list[NDArray[np.float64]] = []
+    cornering: list[NDArray[np.float64]] = []
+    for start, stop in bounds:
+        angles.append(turn_angles_deg(positions[start:stop], min_step_m=min_step_m))
+        cornering.append(
+            lateral_accelerations(frames[start:stop], positions[start:stop], fps, times)
+        )
+    turns = np.concatenate(angles) if angles else np.empty(0)
+    accel = np.concatenate(cornering) if cornering else np.empty(0)
+    return {
+        "turn_p99": float(np.percentile(turns, 99)) if turns.size else 0.0,
+        "lateral_max": float(accel.max()) if accel.size else 0.0,
+        "runs": float(len(bounds)),
+    }
+
+
 def _second_derivative_operator(t: NDArray[np.float64]) -> NDArray[np.float64]:
     """``(n-2, n)`` finite-difference second derivative on an uneven time grid.
 
@@ -229,24 +340,23 @@ def fit_smooth_curve(
     measurements: NDArray[np.float64] | None = None,
     turn_target_deg: float = CURVE_TURN_TARGET_DEG,
     meas_std: float | None = None,
+    impact_frame: int | None = None,
 ) -> NDArray[np.float64]:
     """Fit the smoothest curve through a track that the measurements still allow.
 
-    A penalised least-squares (Whittaker) fit: minimise
-    ``||z - y||^2 + lambda * ||z''||^2`` on the real time grid, jointly for x and
-    y. It is the discrete smoothing spline, so the solution is a cubic-spline-like
-    C^2 curve; as ``lambda`` grows the second derivative is driven to zero and the
-    fit degenerates to a STRAIGHT LINE, which is why a straight run comes out
-    straight and a turn comes out as an actual arc.
+    Splits the track at ``impact_frame`` and fits each side independently. A
+    collision is an IMPULSE -- speed and heading are genuinely discontinuous
+    across it -- so a single C^2 curve spanning the impact has to choose between
+    denying the crash and failing its own smoothness criteria. Fitted whole,
+    BMW's motorbike did both: the real direction change at the impact kept the
+    turn-angle criterion failing however far lambda was pushed, so the walk ran to
+    the end of the grid and straightened the ENTIRE track to pay for one local
+    feature -- start point moved 1.77 m, path length 6.04 m -> 3.54 m, and the
+    change of direction that is the main evidence in the clip flattened away.
+    Fitted either side of the impact, both runs come out smooth and the corner
+    between them survives, because nothing constrains curvature ACROSS the split.
 
-    ``lambda`` is not tuned per scene. Two opposing quantities bracket it -- the
-    p95 turn angle FALLS as lambda grows, the deviation from the measurements
-    RISES -- so the grid is walked from the weakest penalty upward, and the fit
-    returned is the first one whose shape meets ``turn_target_deg``, or, if none
-    does, the strongest one still inside the faithfulness budget. The budget is
-    the same all-or-nothing rule :func:`kalman_rts_smooth` uses (median deviation
-    against :data:`DIVERGENCE_TOLERANCE_M` / ``SIGMA`` / ``EXTENT``), so this
-    stage can round off a zig-zag but cannot walk the route off the road.
+    See :func:`_fit_segment` for how each side is fitted and guarded.
 
     Args:
         frames: Frame numbers, ascending (gaps allowed -- handled via real dt).
@@ -255,9 +365,11 @@ def fit_smooth_curve(
         times: Optional ``{frame: t_sec}`` real timestamps (PTS) for VFR clips.
         measurements: ``(n, 2)`` positions the fit must stay faithful to --
             the anchors that went INTO the smoother. Defaults to ``positions``.
-        turn_target_deg: p95 per-sample turn angle to get under.
+        turn_target_deg: p99 per-sample turn angle to get under.
         meas_std: Measurement noise (m) sizing the budget; estimated from
             ``measurements`` when None.
+        impact_frame: Contact frame to split at. Ignored when it falls outside
+            the track or leaves either side under :data:`MIN_SEGMENT_SAMPLES`.
 
     Returns:
         ``(n, 2)`` smoothed positions at the same frames.
@@ -269,7 +381,7 @@ def fit_smooth_curve(
         line = np.column_stack([np.linspace(0, 6, 60), np.zeros(60)])
         noisy = line + rng.normal(0, 0.05, line.shape)
         fit = fit_smooth_curve(frames, noisy, 30.0)
-        bool(np.percentile(turn_angles_deg(fit), 95) < 5.0)
+        bool(np.percentile(turn_angles_deg(fit), 99) < 5.0)
         # True
         ```
     """
@@ -283,6 +395,78 @@ def fit_smooth_curve(
     if n < 4 or len(reference) != n:
         return positions.copy()
 
+    split = _impact_split(frames, impact_frame)
+    if split is None:
+        return _fit_segment(
+            frames, positions, fps, times, reference, turn_target_deg, meas_std
+        )
+    out = np.empty_like(positions)
+    for start, stop in ((0, split), (split, n)):
+        out[start:stop] = _fit_segment(
+            frames[start:stop],
+            positions[start:stop],
+            fps,
+            times,
+            reference[start:stop],
+            turn_target_deg,
+            meas_std,
+        )
+    return out
+
+
+def _impact_split(frames: list[int], impact_frame: int | None) -> int | None:
+    """Index where the post-impact run starts, or None to fit the track whole."""
+    if impact_frame is None:
+        return None
+    # The impact sample itself ends the pre-impact run: the vehicle is still on
+    # its old heading when contact is made, and the new one starts after.
+    split = sum(1 for f in frames if f <= impact_frame)
+    if split < MIN_SEGMENT_SAMPLES or len(frames) - split < MIN_SEGMENT_SAMPLES:
+        return None
+    return split
+
+
+def _fit_segment(
+    frames: list[int],
+    positions: NDArray[np.float64],
+    fps: float,
+    times: dict[int, float] | None,
+    reference: NDArray[np.float64],
+    turn_target_deg: float,
+    meas_std: float | None,
+) -> NDArray[np.float64]:
+    """Smoothest penalised least-squares fit of one run, within two guards.
+
+    A penalised least-squares (Whittaker) fit: minimise
+    ``||z - y||^2 + lambda * ||z''||^2`` on the real time grid, jointly for x and
+    y. It is the discrete smoothing spline, so the solution is a cubic-spline-like
+    C^2 curve; as ``lambda`` grows the second derivative is driven to zero and the
+    fit degenerates to a STRAIGHT LINE, which is why a straight run comes out
+    straight and a turn comes out as an actual arc.
+
+    ``lambda`` is not tuned per scene. Two opposing quantities bracket it -- the
+    turn angle FALLS as lambda grows, the deviation from the measurements RISES --
+    so the grid is walked from the weakest penalty upward, and the fit returned is
+    the first one meeting both shape criteria, or, if none does, the strongest one
+    still inside both faithfulness guards:
+
+    - the MEDIAN-deviation budget :func:`kalman_rts_smooth` uses, measured
+      against ``reference`` (the anchors), which catches a fit that has left the
+      observation entirely;
+    - a MAX-deviation cap (:data:`MAX_SHAPE_DEVIATION_EXTENT`), measured against
+      ``positions`` (what this stage was handed), which catches the failure a
+      median cannot see -- a fit that keeps the typical sample close while
+      reshaping one part of the track into something else.
+
+    The two guards deliberately measure against different things. The cap asks
+    "how much did THIS stage reshape the run", so it has to be relative to this
+    stage's input; billing it against the anchors instead charges the fit for the
+    Kalman pass's displacement as well, which on four tracks left no budget at
+    all and disabled the smoothing outright.
+    """
+    n = len(frames)
+    if n < 4:
+        return positions.copy()
     dt = _dt_seconds(frames, fps, times)
     t = np.concatenate([[0.0], np.cumsum(dt)])
     operator = _second_derivative_operator(t)
@@ -298,6 +482,7 @@ def fit_smooth_curve(
     budget = max(DIVERGENCE_TOLERANCE_M, DIVERGENCE_TOLERANCE_SIGMA * meas_std)
     path_length = float(np.hypot(*np.diff(reference, axis=0).T).sum())
     budget = min(budget, DIVERGENCE_TOLERANCE_EXTENT * path_length)
+    shape_cap = MAX_SHAPE_DEVIATION_EXTENT * path_length
 
     best = positions.copy()
     for lam in _CURVE_LAMBDAS:
@@ -305,7 +490,9 @@ def fit_smooth_curve(
             candidate = np.linalg.solve(identity + lam * penalty, positions)
         except np.linalg.LinAlgError:  # pragma: no cover - singular is not reachable
             break
-        if float(np.median(np.hypot(*(candidate - reference).T))) > budget:
+        drifted = float(np.median(np.hypot(*(candidate - reference).T))) > budget
+        reshaped = float(np.hypot(*(candidate - positions).T).max()) > shape_cap
+        if drifted or reshaped:
             break  # past here every stronger penalty is further out too
         best = candidate
         # Both defects have to be gone: per-sample zig-zag AND the elbow. Judged
@@ -313,7 +500,9 @@ def fit_smooth_curve(
         # 285-sample track whose p95 passes still leaves ~14 samples free to
         # kink, and a single corner in an otherwise clean line is exactly what
         # the reader's eye lands on.
-        angles = turn_angles_deg(candidate)
+        angles = turn_angles_deg(
+            candidate, min_step_m=_STATIONARY_STEP_FRACTION * meas_std
+        )
         cornering = lateral_accelerations(frames, candidate, fps, times)
         zigzag = angles.size and float(np.percentile(angles, 99)) > turn_target_deg
         # MAX for the cornering, not a percentile: the sharpest corner a route can
