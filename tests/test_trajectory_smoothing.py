@@ -291,3 +291,191 @@ def test_short_noisy_track_is_not_invented() -> None:
 
     travelled = np.hypot(*(smoothed[-1] - smoothed[0]))
     assert travelled < 3.0  # a walk, not a sprint
+
+
+# --- Shape smoothing (fit_smooth_curve) --------------------------------------
+#
+# The Kalman pass is judged on jerk and on position error, and passes both on the
+# tracks below -- yet the drawn route came out saw-toothed anyway, which is what
+# these tests exist to stop coming back. See the module docstring for why the two
+# are not the same property.
+
+
+def _shape(frames: list[int], positions: np.ndarray, fps: float) -> tuple[float, float]:
+    """The two acceptance measures: p99 turn angle (deg), max cornering (m/s^2)."""
+    angles = ts.turn_angles_deg(positions)
+    accel = ts.lateral_accelerations(frames, positions, fps)
+    return (
+        float(np.percentile(angles, 99)) if angles.size else 0.0,
+        float(accel.max()) if accel.size else 0.0,
+    )
+
+
+def test_slow_track_is_smooth_in_shape_not_only_in_jerk() -> None:
+    """Regression: a crawling vehicle drew as a zig-zag with excellent jerk.
+
+    BMW's car covers 5.5 m in 192 frames -- under 3 cm per frame, no more than
+    the anchor noise. In that regime the wobble is the same size as the step, so
+    the HEADING flips frame to frame while the position error, and hence the
+    jerk, stays small. Jerk read 4.5 m/s^3 and the README figure showed a saw
+    blade.
+
+    Reproduced rather than replayed: a straight crawl at the same frame rate and
+    extent, with ``meas_std`` pinned to the floor, which is the production
+    condition -- the pipeline's second Kalman pass estimates its noise from an
+    input that has already been smoothed once, so the estimate collapses to
+    :data:`MIN_MEAS_STD_M` and the pass hands its wobble straight through.
+    """
+    rng = np.random.default_rng(7)
+    fps, n = 23.0, 192
+    frames = list(range(n))
+    truth = np.column_stack([np.linspace(0.0, 5.5, n), np.zeros(n)])
+    noisy = truth + rng.normal(scale=0.04, size=truth.shape)
+
+    kalman = ts.kalman_rts_smooth(frames, noisy, fps, meas_std=ts.MIN_MEAS_STD_M)
+    fitted = ts.fit_smooth_curve(frames, kalman, fps, measurements=noisy)
+
+    # The Kalman pass alone already looks kinematically fine...
+    assert ts.trajectory_jerk(frames, kalman, fps)["mean_abs"] < 15.0
+    # ...while its SHAPE is not, and the curve fit is what fixes that.
+    assert _shape(frames, kalman, fps)[0] > ts.CURVE_TURN_TARGET_DEG
+    assert _shape(frames, fitted, fps)[0] <= ts.CURVE_TURN_TARGET_DEG
+
+
+def test_elbow_is_rounded_into_an_arc() -> None:
+    """A corner no vehicle could take at this speed is opened out into a curve.
+
+    Per-sample turn angle cannot see this one: 30 degrees spread over ten samples
+    is 3 degrees each, well inside the zig-zag target, and still draws as two
+    straight runs meeting at a point. What rules it out is the lateral
+    acceleration it would take.
+    """
+    fps, n = 30.0, 120
+    frames = list(range(n))
+    # 12 m/s along +x, then the same speed rotated 30 degrees -- an elbow.
+    step = 12.0 / fps
+    heading = np.where(np.arange(n - 1) < n // 2, 0.0, np.radians(30.0))
+    steps = np.column_stack([step * np.cos(heading), step * np.sin(heading)])
+    path = np.vstack([np.zeros(2), np.cumsum(steps, axis=0)])
+
+    fitted = ts.fit_smooth_curve(frames, path, fps, measurements=path)
+
+    assert _shape(frames, path, fps)[1] > ts.MAX_LATERAL_ACCEL_MPS2
+    assert _shape(frames, fitted, fps)[1] <= ts.MAX_LATERAL_ACCEL_MPS2
+    # Rounded, not erased: the fit still gets from the same start to the same end.
+    assert np.hypot(*(fitted[-1] - path[-1])) < 1.5
+
+
+def test_straight_run_stays_straight() -> None:
+    """The strong-penalty end of the fit is a LINE, so a straight run keeps its
+    shape instead of acquiring a curve to spend the smoothing on."""
+    rng = np.random.default_rng(8)
+    fps, n = 25.0, 100
+    frames = list(range(n))
+    truth = np.column_stack([np.linspace(0.0, 25.0, n), np.zeros(n)])
+    noisy = truth + rng.normal(scale=0.1, size=truth.shape)
+
+    fitted = ts.fit_smooth_curve(frames, noisy, fps, measurements=noisy)
+
+    assert np.abs(fitted[:, 1]).max() < 0.1
+    assert np.abs(fitted - truth).mean() < np.abs(noisy - truth).mean()
+
+
+def test_real_turn_is_kept_as_a_turn() -> None:
+    """Smoothing the shape must not flatten a manoeuvre a vehicle really made.
+
+    A 20 m-radius quarter circle driven in 5 s is 6.3 m/s and 2.0 m/s^2 of
+    cornering -- an ordinary turn, comfortably inside
+    :data:`MAX_LATERAL_ACCEL_MPS2`, so the fit has no reason to open it out.
+    """
+    fps, n = 30.0, 150
+    frames = list(range(n))
+    angle = np.linspace(0.0, np.pi / 2, n)
+    truth = np.column_stack([20.0 * np.cos(angle), 20.0 * np.sin(angle)])
+
+    fitted = ts.fit_smooth_curve(frames, truth, fps, measurements=truth)
+
+    # Still a quarter circle of radius 20, not a chord across it.
+    assert np.abs(np.hypot(fitted[:, 0], fitted[:, 1]) - 20.0).max() < 0.5
+
+
+def test_curve_fit_respects_the_faithfulness_budget() -> None:
+    """It may round off a zig-zag; it may not walk the route off the data.
+
+    Driven by a genuinely sharp path the fit cannot smooth for free: the returned
+    curve must still sit inside the same all-or-nothing budget
+    :func:`kalman_rts_smooth` uses, rather than straightening whatever it takes to
+    hit the shape targets.
+    """
+    fps, n = 30.0, 120
+    frames = list(range(n))
+    half = n // 2
+    path = np.vstack(
+        [
+            np.column_stack([np.linspace(0, 20, half), np.zeros(half)]),
+            np.column_stack([np.full(n - half, 20.0), np.linspace(0.2, 20, n - half)]),
+        ]
+    )
+
+    fitted = ts.fit_smooth_curve(frames, path, fps, measurements=path)
+
+    budget = min(
+        ts.DIVERGENCE_TOLERANCE_M,
+        ts.DIVERGENCE_TOLERANCE_EXTENT
+        * float(np.hypot(*np.diff(path, axis=0).T).sum()),
+    )
+    assert float(np.median(np.hypot(*(fitted - path).T))) <= budget
+
+
+def test_stationary_wobble_does_not_veto_the_fit() -> None:
+    """A parked vehicle's heading is meaningless; it must not block smoothing.
+
+    Its sub-millimetre steps flip direction at random, so a turn-angle-only rule
+    would reject every candidate and hand back the unsmoothed track. Lateral
+    acceleration is (yaw rate x speed), which is ~0 when the vehicle is stopped.
+    """
+    rng = np.random.default_rng(9)
+    fps, n = 30.0, 150
+    frames = list(range(n))
+    moving = np.column_stack([np.linspace(0.0, 10.0, 100), np.zeros(100)])
+    parked = np.column_stack([np.full(50, 10.0), np.zeros(50)])
+    path = np.vstack([moving, parked]) + rng.normal(scale=0.02, size=(n, 2))
+
+    fitted = ts.fit_smooth_curve(frames, path, fps, measurements=path)
+
+    assert not np.array_equal(fitted, path)  # the fit ran rather than bailing out
+    assert _shape(frames, fitted, fps)[1] <= ts.MAX_LATERAL_ACCEL_MPS2
+
+
+def test_smooth_metric_delivers_a_smooth_shape() -> None:
+    """End to end: what every writer reads is shape-smooth, not just low-jerk."""
+    from accident_reconstruction.auto_reconstruct import smooth_metric
+
+    rng = np.random.default_rng(10)
+    fps, n = 23.0, 192
+    frames = list(range(n))
+    truth = np.column_stack([np.linspace(0.0, 5.5, n), np.zeros(n)])
+    noisy = truth + rng.normal(scale=0.02, size=truth.shape)
+    metric = {
+        "car": {
+            f: (float(noisy[i][0]), float(noisy[i][1])) for i, f in enumerate(frames)
+        }
+    }
+
+    out = smooth_metric(metric)
+
+    positions = np.array([out["car"][f] for f in frames])
+    turn, cornering = _shape(frames, positions, fps)
+    assert turn <= ts.CURVE_TURN_TARGET_DEG
+    assert cornering <= ts.MAX_LATERAL_ACCEL_MPS2
+
+
+def test_turn_angles_of_a_straight_line_are_zero() -> None:
+    straight = np.column_stack([np.arange(6.0), np.zeros(6)])
+    assert ts.turn_angles_deg(straight).max() == pytest.approx(0.0, abs=1e-9)
+
+
+def test_short_track_skips_the_curve_fit() -> None:
+    frames = [0, 1, 2]
+    pos = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.5]])
+    assert np.array_equal(ts.fit_smooth_curve(frames, pos, 25.0), pos)

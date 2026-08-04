@@ -17,8 +17,9 @@
 ```
 
 其中步驟 ⑤ 的軌跡精修本身是一條子管線，順序為
-**在地輪廓 anchor → 峰值速度守門 → Kalman-RTS 平滑 → 空缺補值 → 再平滑**；
-平滑是**無條件**執行的最後一段，不隨 anchor 修正成功與否而被跳過
+**在地輪廓 anchor → 峰值速度守門 → Kalman-RTS 平滑 → 空缺補值 → 再平滑 → 平滑曲線擬合**；
+平滑是**無條件**執行的最後一段，不隨 anchor 修正成功與否而被跳過。最後那段曲線擬合是**形狀**
+保證：Kalman 管的是運動學（jerk），管不到「圖上看起來平不平滑」，兩者不是同一件事
 （見 [`docs/TRAJECTORY_SMOOTHING.md`](docs/TRAJECTORY_SMOOTHING.md)）。
 
 速度與位置以這條 2D homography 管線為準；其餘（3D 場景、前端）都是圍繞它的呈現。
@@ -29,15 +30,15 @@
 
 本 repo 是「一條 2D 管線 + 圍繞它的呈現層」。各部分與其詳細文件：
 
-| 部分                   | 做什麼                                                                             | 程式                                                                    | 詳細文件                                                                                                  |
-| ---------------------- | ---------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| **2D 重建管線**        | 影片 → 追蹤 → 投影 → 撞擊/對齊 → KML/CSV/圖                                        | `accident_reconstruction/`                                              | [`docs/README.md`](docs/README.md)、[`ACCIDENT_2D_RECONSTRUCTION.md`](docs/ACCIDENT_2D_RECONSTRUCTION.md) |
-| **Web 工作台**         | 五步驟 UI 收整條管線，磁碟讀結果                                                   | `web_app.py`                                                            | [`docs/README.md`](docs/README.md) §工作台                                                                |
-| **軌跡精修**           | 在地輪廓 anchor → 峰值守門 → Kalman-RTS 平滑 → 空缺補值 → 再平滑、Stage-2 疊加影片 | `ground_footprint.py`、`trajectory_smoothing.py`、`auto_reconstruct.py` | [`docs/summary.md`](docs/summary.md)、[`TRAJECTORY_SMOOTHING.md`](docs/TRAJECTORY_SMOOTHING.md)           |
-| **車速校正**（Path A） | 方向感知的縱向尺度校正（後視誠實棄權）                                             | `auto_reconstruct.py`                                                   | [`docs/summary.md`](docs/summary.md) §車速                                                                |
-| **3D 場景重建**        | 深度 splat 背景 + CAD 路面模型                                                     | `depth_backdrop.py`、`self_calibration.py`※                             | [`docs/3D_RECONSTRUCTION.md`](docs/3D_RECONSTRUCTION.md)                                                  |
-| **前端 3D 檢視器**     | Three.js/R3F 回放軌跡＋底圖（OSM/Google tiles/splat）                              | `frontend/`                                                             | [`frontend/README.md`](frontend/README.md)、[`SPLAT_NOTES.md`](frontend/SPLAT_NOTES.md)                   |
-| **資料交換格式**       | `reconstruction.json` schema（給前端）                                             | —                                                                       | [`docs/frontend_api.md`](docs/frontend_api.md)                                                            |
+| 部分                   | 做什麼                                                                                        | 程式                                                                    | 詳細文件                                                                                                  |
+| ---------------------- | --------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| **2D 重建管線**        | 影片 → 追蹤 → 投影 → 撞擊/對齊 → KML/CSV/圖                                                   | `accident_reconstruction/`                                              | [`docs/README.md`](docs/README.md)、[`ACCIDENT_2D_RECONSTRUCTION.md`](docs/ACCIDENT_2D_RECONSTRUCTION.md) |
+| **Web 工作台**         | 五步驟 UI 收整條管線，磁碟讀結果                                                              | `web_app.py`                                                            | [`docs/README.md`](docs/README.md) §工作台                                                                |
+| **軌跡精修**           | 在地輪廓 anchor → 峰值守門 → Kalman-RTS 平滑 → 空缺補值 → 再平滑 → 曲線擬合、Stage-2 疊加影片 | `ground_footprint.py`、`trajectory_smoothing.py`、`auto_reconstruct.py` | [`docs/summary.md`](docs/summary.md)、[`TRAJECTORY_SMOOTHING.md`](docs/TRAJECTORY_SMOOTHING.md)           |
+| **車速校正**（Path A） | 方向感知的縱向尺度校正（後視誠實棄權）                                                        | `auto_reconstruct.py`                                                   | [`docs/summary.md`](docs/summary.md) §車速                                                                |
+| **3D 場景重建**        | 深度 splat 背景 + CAD 路面模型                                                                | `depth_backdrop.py`、`self_calibration.py`※                             | [`docs/3D_RECONSTRUCTION.md`](docs/3D_RECONSTRUCTION.md)                                                  |
+| **前端 3D 檢視器**     | Three.js/R3F 回放軌跡＋底圖（OSM/Google tiles/splat）                                         | `frontend/`                                                             | [`frontend/README.md`](frontend/README.md)、[`SPLAT_NOTES.md`](frontend/SPLAT_NOTES.md)                   |
+| **資料交換格式**       | `reconstruction.json` schema（給前端）                                                        | —                                                                       | [`docs/frontend_api.md`](docs/frontend_api.md)                                                            |
 
 ※ CAD 線在未併入的 branch `accident-scene-cad-modeling-5aaa03` 上，見 3D 文件。
 
@@ -61,10 +62,18 @@
 真實涵蓋整段行車路線時才可靠；GCP 擠在小範圍時殘差會很漂亮，車速卻被嚴重低估
 （下表因此並列 GCP 涵蓋範圍，詳見 [`docs/summary.md`](docs/summary.md)）。
 
-圖中軌跡已套用 Kalman-RTS 平滑，`meas_std` 逐軌跡估計並帶發散守門——最終輸出與原始投影的
-端點距離，13 條軌跡有 11 條落在 ±11% 內，即**平滑貼著量測、沒有自行編造路徑**。撞擊後數幀
-與軌跡末端仍可能偏離數公尺（等加速模型表達不了脈衝式碰撞），詳見
-[`docs/TRAJECTORY_SMOOTHING.md`](docs/TRAJECTORY_SMOOTHING.md)。
+**每一條輸出的軌跡都是平滑曲線或直線，沒有鋸齒。** 這是最後一段平滑曲線擬合保證的：
+Kalman-RTS 之後再解一次二階懲罰最小平方（Whittaker 平滑樣條），λ 由軌跡自己決定——往上掃到
+兩個條件同時成立為止：**每點轉向角 p99 ≤ 5°**，且**側向加速度 ≤ 4 m/s²（約 0.4 g）**。
+13 條軌跡全部滿足，其中 6 條本來就合格、原樣通過。強懲罰的極限是一條直線，所以直行段出來是
+直線、轉彎出來是真正的圓弧。
+
+平滑不能拿來編造路徑：擬合與 Kalman 都對**進入這一段的 anchor** 量忠實度，中位偏離超出預算就
+整條退回。實測最多移動 0.44 m（中位）；以端點直線距離對比原始單應投影，13 條有 10 條落在
+±12% 內。**代價要講清楚**：拉直鋸齒會縮短路徑、速度因此略降，縮最多的三條（BMW 機車 −29%、
+宜蘭五結機車 −18%、桃園 car −15%）都是「每幀步長小於 anchor 雜訊」那一類，原本的長度有一部分
+是抖動堆出來的。撞擊後數幀與軌跡末端仍可能偏離數公尺（等加速模型表達不了脈衝式碰撞，曲線
+擬合也會把它一起磨圓），詳見 [`docs/TRAJECTORY_SMOOTHING.md`](docs/TRAJECTORY_SMOOTHING.md)。
 
 <table>
   <tr>
@@ -178,7 +187,7 @@ accident_reconstruction/   可 import 的核心 pipeline 套件（2D 重建 + �
   ├ prompt_track_accident.py   Stage 1：SAM2 追蹤 → anchors + 接地輪廓
   ├ auto_reconstruct.py        Stage 2：投影 + 撞擊 + 軌跡精修編排 + 疊加影片
   ├ ground_footprint.py        在地輪廓 anchor / 空缺補值
-  ├ trajectory_smoothing.py    等加速 Kalman + RTS 平滑、jerk 驗收指標
+  ├ trajectory_smoothing.py    等加速 Kalman + RTS 平滑、平滑曲線擬合、jerk/形狀驗收指標
   ├ depth_backdrop.py          3D 深度 splat 背景（線 A）
   └ web_app.py                 Web 工作台（FastAPI）
 frontend/                  Three.js/R3F 3D 檢視器（回放軌跡；SPLAT_NOTES.md / SCENE_NOTES.md）

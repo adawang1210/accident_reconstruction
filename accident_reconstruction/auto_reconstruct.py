@@ -142,14 +142,23 @@ def smooth_metric(
     Returns:
         Per-vehicle smoothed metric positions, at the same frames.
     """
+
     # map_tracks supplies the pass-through for a track too short to smooth, and
     # guarantees no vehicle is dropped -- the two invariants this stage exists to
     # hold. See :mod:`track_ops`.
-    return map_tracks(
-        metric,
-        lambda track, _: ts.kalman_rts_smooth(track.frames, track.positions, scene.fps),
-        min_samples=3,
-    )
+    def smooth(track, _label: str):
+        kalman = ts.kalman_rts_smooth(track.frames, track.positions, scene.fps)
+        # ...then enforce the SHAPE. The Kalman pass makes the motion physically
+        # plausible; it does not guarantee the drawn route looks like a curve,
+        # because heading noise scales with wobble/step and a slow vehicle's step
+        # is no bigger than its wobble. Both faithfulness guards measure against
+        # ``track.positions`` -- the anchors as they entered this stage -- so the
+        # two passes cannot drift off the data one after the other.
+        return ts.fit_smooth_curve(
+            track.frames, kalman, scene.fps, measurements=track.positions
+        )
+
+    return map_tracks(metric, smooth, min_samples=3)
 
 
 # Reject the refined track if its PEAK speed exceeds the legacy peak by more than
